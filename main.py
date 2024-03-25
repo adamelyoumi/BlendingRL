@@ -5,7 +5,6 @@ from gym.utils import seeding
 from or_gym.utils import assign_env_config
 
 
-# Classes for 
 class Tank():
     def __init__(self) -> None:
         pass
@@ -61,10 +60,9 @@ class PoolEnv(gym.Env):
         
         self.N = self.N_blending + self.N_supply + self.N_demand
 
-        obs_space = spaces.Box(
-            0, self.max_weight, shape=(2*self.N + 1,), dtype=np.int32)
+        obs_space = ...
         
-        self.action_space = spaces.Discrete(self.N)
+        self.action_space = ...
         
         if self.mask:
             self.observation_space = spaces.Dict({
