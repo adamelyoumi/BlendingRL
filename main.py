@@ -104,33 +104,36 @@ class BlendEnv(gym.Env):
         self.T = 7
         self.alpha = 0.1
         self.beta = 0.02
-        self.sources = ["s1", "s2"]
-        self.demands = ["p1", "p2"]
-        self.blenders = ["j1", "j2", "j3", "j4", "j5", "j6", "j7", "j8"]
-        self.properties = ["q1"]
-        
-        self.tau   = {'s1': [10, 10, 10, 0, 0, 0, 0], 's2': [30, 30, 30, 0, 0, 0, 0]}
-        self.delta = {'p1': [0, 0, 0, 15, 15, 15, 15], 'p2': [0, 0, 0, 15, 15, 15, 15]}
-        
-        self.sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}}
-        self.sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}}
-        self.sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
-        
-        self.s_inv_lb = {'s1': 0, 's2': 0}
-        self.s_inv_ub = {'s1': 0, 's2': 0}
-        self.d_quals_lb = {'p1': 0, 'p2': 0}
-        self.d_quals_ub = {'p1': 0.16, 'p2': 0.1}
-        self.d_inv_lb = {'p1': 0, 'p2': 0}
-        self.d_inv_ub = {'p1': 0, 'p2': 0}
-        
-        self.betaT_d = {'p1': 2, 'p2': 1}
-        self.betaT_s = {'s1': 0, 's2': 0}
-        
-        self.b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30, "j5": 20, "j6": 20, "j7": 20, "j8": 20}
         
         with open("./connections_sample.json" ,"r") as f:
-            conn_S = f.readline()
-        self.connections = json.loads(conn_S)
+            connections_s = f.readline()
+        self.connections = json.loads(connections_s)
+        
+        self.properties = ["q1"]
+        
+        self.tau0   = {'s1': [10, 10, 10, 0, 0, 0, 0], 's2': [30, 30, 30, 0, 0, 0, 0]}
+        self.delta0 = {'p1': [0, 0, 0, 15, 15, 15, 15], 'p2': [0, 0, 0, 15, 15, 15, 15]}
+        
+        self.sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}} # Source concentrations
+        self.sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}} # Demand concentrations UBs/LBs
+        self.sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
+        
+        self.s_inv_lb = {'s1': 0, 's2': 0}          # Unused
+        self.s_inv_ub = {'s1': 0, 's2': 0}          # Unused
+        self.d_quals_lb = {'p1': 0, 'p2': 0}        # Unused
+        self.d_quals_ub = {'p1': 0.16, 'p2': 0.1}   # Unused
+        self.d_inv_lb = {'p1': 0, 'p2': 0}          # Unused
+        self.d_inv_ub = {'p1': 0, 'p2': 0}          # Unused
+        
+        self.betaT_d = {'p1': 2, 'p2': 1} # Price of sold products
+        self.betaT_s = {'s1': 0, 's2': 0} # Cost of bought products
+        
+        self.b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30, "j5": 20, "j6": 20, "j7": 20, "j8": 20} # Unused
+        
+        
+        self.sources = list(self.connections["tau"].keys())
+        self.demands = list(self.connections["blend_blend"].keys())
+        self.blenders = list(self.connections["delta"].keys())
         
         assign_env_config(self, kwargs)
         
@@ -139,7 +142,11 @@ class BlendEnv(gym.Env):
             "sources": {s:0 for s in self.sources},
             "blenders": {b:0 for b in self.blenders},
             "demands": {p:0 for p in self.demands},
-            "properties": {b: {q:0 for q in self.properties} for b in self.blenders}
+            "properties": {b: {q:0 for q in self.properties} for b in self.blenders},
+            # How much we can buy at the current timestamp. Noted as "F^{IN}_{s,t}" in the paper
+            "sources_avail": {s:{q:0 for q in self.properties} for s in self.sources},
+            # How much we can sell at the current timestamp. Noted as "FD^L_{p,t}" in the paper
+            "demands_avail": {p:{q:0 for q in self.properties} for p in self.demands}  
         }
         
         self.reset()
@@ -154,9 +161,8 @@ class BlendEnv(gym.Env):
         prev_blend_invs = self.state["blenders"]
         
         for s in self.sources:
-            # How does the model know how much he can buy ?
             self.state["sources"][s] = self.state["sources"][s] \
-                                        + action["tau"][s] \
+                                        + min(action["tau"][s], self.state["sources_avail"]) \
                                         - sum([action["source_blend"][s][j] for j in action[s].keys()])
         
         for j in self.blenders:
@@ -167,7 +173,6 @@ class BlendEnv(gym.Env):
                                         - sum([action[j][p] for p in action["blend_demand"][j].keys()]) \
                                             
         for p in self.demands:
-            # How does the model know how much he can sell ?
             self.state["demands"][p] = self.state["demands"][p] \
                                         - action["delta"][p] \
                                         + sum([action[j][p] for j in action["blend_demand"].keys()])
@@ -182,6 +187,15 @@ class BlendEnv(gym.Env):
                                                     - sum(self.state["properties"][j][q] * action[j][p] for p in self.demands)
                                                 )
         
+        # Telling the model how much can be bought/sold
+        for q in self.properties:
+            for s in self.sources:
+                self.state["sources_avail"][s][q] = self.tau0[self.t]
+            
+            for p in self.demands:
+                self.state["demands_avail"][p][q] = self.delta0[self.t]
+                
+        
         self.update_reward(action)
         
         return self.state, self.reward, self.done
@@ -191,7 +205,7 @@ class BlendEnv(gym.Env):
             Follows the definition/structure of the Overleaf Document
 
         Args:
-            action (dict): See action_sample above.
+            action (dict): See action_sample.json .
         """
         Q_float = Q_bin = R1 = R2 = 0
         
@@ -251,51 +265,32 @@ class BlendEnv(gym.Env):
         
     def render(self, action = None):
         
+        print(f"\nt{self.t}:\n")
+        
         if action is not None:
-            M = [[action["source_blend"][s, b] for b in self.blenders] for s in self.sources]
-            N = [[action["blend_blend"][b1, b2] for b2 in self.blenders] for b1 in self.blenders]
-            O = [[action["blend_demand"][b, p] for p in self.demands] for b in self.blenders]
-
-            # Mb = [[self.source_blend_bin[s, b] for b in self.blenders] for s in self.sources]
-            # Nb = [[self.blend_blend_bin[b1, b2] for b2 in self.blenders] for b1 in self.blenders]
-            # Ob = [[self.blend_demand_bin[b, p] for p in self.demands] for b in self.blenders]
+            M = [[action["source_blend"][s][b] for b in self.blenders] for s in self.sources]
+            N = [[action["blend_blend"][b1][b2] for b2 in self.blenders] for b1 in self.blenders]
+            O = [[action["blend_demand"][b][p] for p in self.demands] for b in self.blenders]
 
         Mi = [self.state["sources"][s] for s in self.sources]
         Ni = [self.state["blenders"][b] for b in self.blenders]
         Oi = [self.state["demands"][p] for p in self.demands]
 
-        print("\n\n\n\n##################### CONTINUOUS VARIABLES #####################\n")
-        for t in range(self.T):
-            print(f"\nt{t}:")
-            print("s2b")
-            for s in range(len(self.sources)):
-                print(M[t][s])
-            print("b2b")
-            for b in range(len(self.blenders)):
-                print(N[t][b])
-            print("b2p")
-            for b in range(len(self.blenders)):
-                print(O[t][b])
+        print("\n\n\n##################### ACTION FLOW VARIABLES #####################\n\n")
+        
+        print("s2b")
+        for s in range(len(self.sources)):
+            print(M[s])
+        print("b2b")
+        for b in range(len(self.blenders)):
+            print(N[b])
+        print("b2p")
+        for b in range(len(self.blenders)):
+            print(O[b])
 
-        # print("\n\n\n\n##################### BINARY VARIABLES #####################\n")
-        # for t in range(self.T):
-            # print(f"\nt{t}:")
-            # print("s2b")
-            # for s in range(len(self.sources)):
-                # print(Mb[t][s])
-            # print("b2b")
-            # for b in range(len(self.blenders)):
-                # print(Nb[t][b])
-            # print("b2p")
-            # for b in range(len(self.blenders)):
-                # print(Ob[t][b])
-
-
-        print("\n\n\n\n##################### INVENTORY VARIABLES #####################\n")
-        for t in range(self.T):
-            print(f"\nt{t}:")
-            print(Mi[t])
-            print(Ni[t])
-            print(Oi[t])
+        print("\n\n\n##################### INVENTORY VARIABLES #####################\n\n")
+        print(Mi)
+        print(Ni)
+        print(Oi)
             
-        print("\n\n\n\nObjective Value:", self.obj())
+        print("\n\n\n\nReward:", self.reward)
