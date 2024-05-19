@@ -6,17 +6,21 @@ from gymnasium.utils import seeding
 from or_gym.utils import assign_env_config
 import json
 import torch as t
+import os, sys
 
 """
-    How to convert state dict to model input, and model output back to action dict ?
-    Use of a class-based environment ?
     Penalties to add (?):
-        - Flow > Inventory (or let the model learn by itself and we cap the action before applying it ?)
-        - Sell > demand
-        - Buy > Supply
+        -
     Continuous reward: is it really a problem ?
     Are changes only going to be related to supply and demand, or also tank number and connections ?
 """
+
+def clip(x,a,b):
+    if x>b:
+        return b
+    elif x<a:
+        return a
+    return x
 
 def dict_to_gym_space(d):
     sub_spaces = {}
@@ -138,11 +142,25 @@ class BlendEnv(gym.Env):
         self.alpha = 0.1
         self.beta = 0
         self.v = False # Verbose
+        self.logfile = None # Set it to a path to redirect logging to a file
         
+        # Defining logging function
         self.logg = lambda *args: print(*args) if self.v else lambda *args: None
+        # if self.v and self.logfile is not None:
+        #     try:
+        #         os.remove(self.logfile)
+        #     except:
+        #         pass
+        #     f = open(self.logfile, "+a")
+        #     self.logg = lambda *args: print(*args, file=f)
+        # elif self.v:
+        #     self.logg = lambda *args: print(*args)
+        # else:
+        #     self.logg = lambda *args: None
+            
         
-        self.M = 1e2 # Negative reward (penalty) constant factor
-        self.P = 1e1 # Negative reward (penalty) constant factor (small)
+        self.M = 1e3 # Negative reward (penalty) constant factor
+        self.P = 1e2 # Negative reward (penalty) constant factor (small)
         self.Z = 1e4 # Positive reward multiplier to emphasize that "selling is good"
         
         self.MAXFLOW = 150
@@ -157,25 +175,25 @@ class BlendEnv(gym.Env):
         self.tau0   = {'s1': [10, 10, 10, 0, 0, 0],  's2': [30, 30, 30, 0, 0, 0]}
         self.delta0 = {'p1': [0, 0, 15, 15, 15, 15], 'p2': [0, 0, 15, 15, 15, 15]}
         
+        self.sources = list(self.tau0.keys())
+        self.demands = list(self.delta0.keys())
+        self.blenders = list(self.connections["blend_blend"].keys())
+        
         self.sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}} # Source concentrations
         self.sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}} # Demand concentrations UBs/LBs
         self.sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
         
-        self.s_inv_lb = {'s1': 0, 's2': 0}          # Unused
-        self.s_inv_ub = {'s1': 0, 's2': 0}          # Unused
-        self.d_quals_lb = {'p1': 0, 'p2': 0}        # Unused
-        self.d_quals_ub = {'p1': 0.16, 'p2': 0.1}   # Unused
-        self.d_inv_lb = {'p1': 0, 'p2': 0}          # Unused
-        self.d_inv_ub = {'p1': 0, 'p2': 0}          # Unused
+        self.s_inv_lb = {'s1': 0, 's2': 0}
+        self.s_inv_ub = {'s1': 999, 's2': 999}
+        self.d_inv_lb = {'p1': 0, 'p2': 0}
+        self.d_inv_ub = {'p1': 999, 'p2': 999}
         
         self.betaT_d = {'p1': 2, 'p2': 1} # Price of sold products
         self.betaT_s = {'s1': 0, 's2': 0} # Cost of bought products
         
-        self.b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30, "j5": 20, "j6": 20, "j7": 20, "j8": 20} # Unused
+        self.b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30, "j5": 20, "j6": 20, "j7": 20, "j8": 20} 
+        self.b_inv_lb = {j:0 for j in self.blenders} 
         
-        self.sources = list(self.tau0.keys())
-        self.demands = list(self.delta0.keys())
-        self.blenders = list(self.connections["blend_blend"].keys())
         
         assign_env_config(self, kwargs)
         
@@ -189,17 +207,15 @@ class BlendEnv(gym.Env):
             action = f.readline()
         action = json.loads(action)
         
-        self.logg("ACTION:",action)
+        # self.logg("ACTION:",action)
         
-        
-        # Do not sanitize structure for smaller action space ?
         
         # self.logg("action before sanitizing:", action)
         # action = self.sanitize_action_structure(action, pen = False) # sanitizing to avoid format inconsistencies
         # self.logg("action after sanitizing:",action)
         
         self.flatt_act_sample, self.mapping_act = flatten_and_track_mappings(action)
-        self.logg(f"action space shape: {len(self.flatt_act_sample)}")
+        # self.logg(f"action space shape: {len(self.flatt_act_sample)}")
         self.action_space = Box(low=0, high=self.MAXFLOW, shape=(len(self.flatt_act_sample),))
         
         
@@ -210,11 +226,6 @@ class BlendEnv(gym.Env):
 
         Args:
             action (torch.Tensor): model output
-        """
-        """
-        Questions:
-            How to convert state dict to model input, and model output back to action dict ?
-            Use of a class-based environment ?
         """
         """
         action_sample = {
@@ -261,25 +272,26 @@ class BlendEnv(gym.Env):
         action = reconstruct_dict(action, self.mapping_act) # From non-human-readable list to human-readable dict
         action = self.sanitize_action_structure(action) # Modify action according to chosen rules (ex: set flows < 0.1 to 0 etc)
         
+        action = self.penalize_action_preflows(action)
         
         prev_blend_invs = self.state["blenders"]
         
-        for p in self.demands:
-            self.state["demands_avail_next"][p] = self.delta0[p][self.t]
-        
-        for s in self.sources:
-            self.state["sources_avail_next"][s] = self.tau0[s][self.t]
-        
-        # for s in self.sources:
-        #     self.state["sources"][s] = self.state["sources"][s] \
-        #                                 + min(action["tau"][s], self.state["sources_avail_next"][s]) \
-        #                                 - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()])
 
-        # print("xxx",self.state,"\n\n", action)
         for s in self.sources:
-            self.state["sources"][s] = self.state["sources"][s] \
-                                        + action["tau"][s] \
-                                        - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()])
+            newinv = self.state["sources"][s] - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()]) + action["tau"][s]
+            if newinv > self.s_inv_ub[s]:
+                action["tau"][s] -= newinv - self.s_inv_ub[s]
+                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
+                self.reward -= self.P 
+            elif newinv < self.s_inv_lb[s]:
+                action["tau"][s] += self.s_inv_lb[s] - newinv
+                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too little (resulting amount less than source tank LB)")
+                self.reward -= self.P
+                
+            action["tau"][s] = clip(action["tau"][s], 0, self.state["sources_avail_next"][s])
+            
+            self.state["sources"][s] = self.state["sources"][s] - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()]) + action["tau"][s]
+        
         
         for j in self.blenders:
             in_flow_sources = in_flow_blend = out_flow_blend = out_flow_demands = 0
@@ -287,7 +299,6 @@ class BlendEnv(gym.Env):
                 if j in action["source_blend"][s].keys():
                     in_flow_sources += action["source_blend"][s][j]
             for jp in self.blenders:
-                # print(action["blend_blend"].keys(), action["blend_blend"][jp].keys())
                 if j in action["blend_blend"][jp].keys():
                     in_flow_blend += action["blend_blend"][jp][j]
                 if jp in action["blend_blend"][j].keys():
@@ -295,17 +306,90 @@ class BlendEnv(gym.Env):
             for p in self.demands:
                 if p in action["blend_demand"][j].keys():
                     out_flow_demands += action["blend_demand"][j][p]
+            
+            # Enforcing No in and out flow
+            if (in_flow_sources>0 or in_flow_blend>0) and (out_flow_blend>0 or out_flow_demands>0):
+                self.logg(f"[PEN] t{self.t}; {j}:\t\t\tIn and out flow both non-zero (in: {round(in_flow_sources + in_flow_blend, 2)}, out: {round(out_flow_blend + out_flow_demands, 2)})")
+                self.reward -= self.M
                 
-            self.state["blenders"][j] = self.state["blenders"][j] + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
-                                            
+                # Choice: we remove all flows. We can also remove only outgoing flows, only incoming flows, or decide based on the tank's position
+                # (if the tank is connected to sources, then keep incoming flow, but if it is connected to demands, then keep outgoing flow)
+                for s in self.sources:
+                    if j in action["source_blend"][s].keys():
+                        action["source_blend"][s][j] = 0
+                for jp in self.blenders:
+                    if j in action["blend_blend"][jp].keys():
+                        action["blend_blend"][jp][j] = 0
+                    if jp in action["blend_blend"][j].keys():
+                        action["blend_blend"][j][jp] = 0
+                for p in self.demands:
+                    if p in action["blend_demand"][j].keys():
+                        action["blend_demand"][j][p] = 0
+                
+                continue # Inventory does not change
+            
+            # else...
+            newinv = self.state["blenders"][j] + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
+            
+            # Enforcing inventory bounds
+            # NB: we assume "no in and out" rule is respected
+            # if one of these two "if" conditions is verified, no change is made to the tank
+            if newinv > self.b_inv_ub[j]:
+                # newinv -= in_flow_sources + in_flow_blend
+                # Setting in flows to 0
+                for s in self.sources:
+                    if j in action["source_blend"][s].keys():
+                        action["source_blend"][s][j] = 0    # in_flow_sources = 0
+                for jp in self.blenders:
+                    if j in action["blend_blend"][jp].keys():
+                        action["blend_blend"][jp][j] = 0    # in_flow_blend = 0
+                
+                self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount more than blending tank UB)")
+                self.reward -= self.P
+                continue
+                
+            elif newinv < self.b_inv_lb[j]:
+                # newinv += out_flow_blend + out_flow_demands
+                for jp in self.blenders:
+                    if jp in action["blend_blend"][j].keys():
+                        action["blend_blend"][j][jp] = 0 # out_flow_blend = 0
+                for p in self.demands:
+                    if p in action["blend_demand"][j].keys():
+                        action["blend_demand"][j][p] = 0 # out_flow_demand = 0
+                        
+                self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount less than blending tank LB)")
+                self.reward -= self.P
+                continue
+            
+            # No ifs triggered
+            self.state["blenders"][j] = newinv
+            
+            
+            
         for p in self.demands:
             in_flow_blend = 0
             for jp in self.blenders:
                 if p in action["blend_demand"][jp].keys():
                     in_flow_blend += action["blend_demand"][jp][p]
             
-            self.state["demands"][p] = self.state["demands"][p] - action["delta"][p] + in_flow_blend
-                                        
+            newinv = self.state["demands"][p] + in_flow_blend - action["delta"][p] 
+            
+            # Enforcing inventory bounds
+            if newinv > self.d_inv_ub[p]:
+                action["delta"][p] += newinv - self.d_inv_ub[p]
+                self.reward -= self.P
+                self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too little (resulting amount more than demand tank UB)")
+                
+            elif newinv < self.d_inv_lb[p]:
+                action["delta"][p] -= self.d_inv_lb[p] - newinv
+                self.reward -= self.P
+                self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than demand tank LB)")
+
+            action["delta"][p] = clip(action["delta"][p], 0, self.state["demands_avail_next"][p])
+            
+            self.state["demands"][p] = self.state["demands"][p] + in_flow_blend - action["delta"][p] 
+        
+        # Properties                      
         for j in self.blenders:
             for q in self.properties:
                 if self.state["blenders"][j] == 0:
@@ -329,14 +413,25 @@ class BlendEnv(gym.Env):
                                                     + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
                                                 )
         
+        # action = self.penalize_action_postflows(action)
+        
         self.update_reward(action)
         
         
+        for p in self.demands:
+            self.state["demands_avail_next"][p] = self.delta0[p][self.t]
+        
+        for s in self.sources:
+            self.state["sources_avail_next"][s] = self.tau0[s][self.t]
+            
+        
         self.flatt_state, _ = flatten_and_track_mappings(self.state)
         
-        for k in range(self.flatt_state.shape[0]):
-            self.flatt_state[k] = max(0, self.flatt_state[k]) # non-negative state
-        # Other sanitization to come, if we choose to implement max inventory 
+        
+        ### Commented out to see if it is needed or not (shouldn't be)
+        # for k in range(self.flatt_state.shape[0]):
+        #     self.flatt_state[k] = max(0, self.flatt_state[k]) 
+        
         
         return self.flatt_state, self.reward, self.done, False, {"dict_state": self.state}
     
@@ -407,12 +502,13 @@ class BlendEnv(gym.Env):
             for q in self.properties:
                 for p in self.demands:
                     R2 -= self.penalty_quality(p, q, j, action)
-                
+
         self.reward += R2
         
     def penalty_quality(self, p, q, j, action):
-        if self.state["properties"][j][q] < self.sigma_lb[p][q] and (p in action["blend_demand"][j].keys() and action["blend_demand"][j][p]) > 0:
-            self.logg(f"Sold qualities not in required bounds ! ; ctxt: {p} {q} {j}")
+        if (self.state["properties"][j][q] < self.sigma_lb[p][q] or self.state["properties"][j][q] > self.sigma_ub[p][q]) \
+                and (p in action["blend_demand"][j].keys() and action["blend_demand"][j][p] > 0):
+            self.logg(f"[PEN] t{self.t}; {p}; {q}; {j}:\t\t\tSold qualities out of bounds ({round(self.state['properties'][j][q], 2)})")
             return self.M
         return 0
     
@@ -429,15 +525,10 @@ class BlendEnv(gym.Env):
             sum_out += action["blend_demand"][j][p] if p in action["blend_demand"][j].keys() else 0
             
         if sum_in > 0 and sum_out > 0: # /!\
-            self.logg(f"In and out flow both non-zero ! tank: {j} ; t: {self.t} ; ")
+            self.logg(f"[PEN] t{self.t}; {j}:\t\t\tIn and out flow both non-zero (in: {round(sum_in, 2)}, out:{round(sum_out, 2)})")
             return self.M
         
         return 0
-    
-    # Penalties to add (?):
-    #   - Flow > Inventory (or let the model learn by itself and we cap the action before applying it ?)
-    #   - Sell > demand
-    #   - Buy > Supply
     
     def sanitize_action_structure(self, action):
         """Normalize model action if needed
@@ -447,70 +538,82 @@ class BlendEnv(gym.Env):
         Args:
             action (dict): Action dict
         """
-        self.logg("sanitizing action structure...", action)
-        # Adding all blender/blender pairs to avoid keyerror in self.step()
-        
-        # for s in self.sources:
-        #     for j in self.blenders:
-        #         if j not in action["source_blend"][s].keys():
-        #             action["source_blend"][s][j] = 0
-        
         
         for j in self.blenders:
             if j not in action["blend_blend"].keys():
                 action["blend_blend"][j] = {}
-            # else:
-            #     for jp in self.blenders:
-            #         if jp not in action["blend_blend"][j].keys():
-            #             action["blend_blend"][j][jp] = 0
-
             if j not in action["blend_demand"].keys():
                 action["blend_demand"][j] = {}
-        #     else:
-        #         for p in self.demands:
-        #             if p not in action["blend_demand"][j].keys():
-        #                 action["blend_demand"][j][p] = 0
         return(action)
     
     
-    def sanitize_action_flows(self, action, pen = True):
-        ### Penalty section ###
-        
-        # if log: f = open("logg_penalties", "+a")
+    def penalize_action_preflows(self, action, pen = True):
+        """Add Penalty if the action is illegal (before flows are processed).
+        Includes penalties related to the model proposing to buy/sell more product than the demands/sources allow (not inventory).
+
+        Args:
+            action (dict)
+            pen (bool, optional): Set to False to disable penalties. Defaults to True.
+        """
         
         # Add penalty and log if trying to buy too much product
         for s in self.sources:
             if action["tau"][s] > self.state["sources_avail_next"][s]:
                 action["tau"][s] = self.state["sources_avail_next"][s]
                 self.reward -= self.P if pen else 0 # incur penalty
-                self.logg(f"{self.t}; {s}: bought too much")
+                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (more than supply)")
         
         # Add penalty and log if trying to sell too much product (more than available demand or more than available inventory)
         for p in self.demands:
             if action["delta"][p] > self.state["demands_avail_next"][p]:
                 action["delta"][p] = self.state["demands_avail_next"][p]
                 self.reward -= self.P if pen else 0 # incur penalty
-                self.logg(f"{self.t}; {p}: sold too much (more than demand)")
-                
-            if action["delta"][p] > self.state["demands"][p]:
-                action["delta"][p] = self.state["demands"][p]
-                self.reward -= self.P if pen else 0 # incur penalty
-                self.logg(f"{self.t}; {p}: sold too much (more than inv)")
-        
-        # Add penalty and log if trying to outflow too much matter from a tank
-        for j in self.blenders:
-            S = sum(action["blend_blend"][j].values()) + sum(action["blend_demand"][j].values())
-            if S > self.state["blenders"][j]:
-                self.reward -= self.P if pen else 0 # incur penalty
-                self.logg(f"{self.t} ; {j}: outgoing flow higher than inventory")
-                
-        # self.logg("\n\n")
-        # if log: f.close()
-        
-        # print("sanitized action!!")
+                self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (more than demand)")
         
         return action
     
+    def penalize_action_postflows(self, action, pen = True):
+        """Add Penalty if the action is illegal (after flows are processed but BEFORE product is sold/bought)
+        Includes penalties related to the model proposing to buy/sell more product than the demands/sources allow (inventory), 
+        Fix illegal state accordingly
+
+        Args:
+            action (dict)
+            pen (bool, optional): Set to False to disable penalties. Defaults to True.
+        """
+        for s in self.sources:
+            if self.state["sources"][s] >= self.s_inv_ub[s] or self.state["sources"][s] <= self.s_inv_lb[s]:
+                self.state["sources"][s] = clip(self.state["sources"][s], self.s_inv_lb[s], self.s_inv_ub[s])
+                self.reward -= self.P if pen else 0 # incur penalty
+                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tinventory out of bounds")
+                
+            if action["tau"][s] > self.s_inv_ub[s] - self.state["sources"][s]:
+                action["tau"][s] = self.state["sources"][s]
+                self.reward -= self.P if pen else 0 # incur penalty
+                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
+                
+        for j in self.blenders:
+            if self.state["blenders"][j] >= self.b_inv_ub[j] or self.state["blenders"][j] <= self.b_inv_lb[j]:
+                self.state["blenders"][j] = clip(self.state["blenders"][j], self.b_inv_lb[j], self.b_inv_ub[j])
+                self.reward -= self.P if pen else 0 # incur penalty
+                self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory out of bounds")
+        
+        for p in self.demands:
+            if self.state["demands"][p] >= self.d_inv_ub[p] or self.state["demands"][p] <= self.d_inv_lb[p]:
+                self.state["demands"][p] = clip(self.state["demands"][p], self.d_inv_lb[p], self.d_inv_ub[p])
+                self.reward -= self.P if pen else 0 # incur penalty
+                self.logg(f"[PEN] t{self.t}; {p}:\t\t\tinventory out of bounds")
+                
+            if action["delta"][p] > self.state["demands"][p] - self.d_inv_lb[p]:
+                action["delta"][p] = self.state["demands"][p]
+                self.reward -= self.P if pen else 0 # incur penalty
+                self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than tank LB)")
+                
+                # tau = 50
+                # state = 20
+                # ub = 60
+                # tau > ub-state
+                
     
     def load_gurobi_actions(self): # No "tau" !
         s_b_flows = np.load("arrays/s_b_flows.npy")
@@ -520,6 +623,8 @@ class BlendEnv(gym.Env):
         
         return s_b_flows, b_b_flows, b_d_flows, delta
         
+    
+    
     def reset(self, seed=0):
         self.t = 0
         
