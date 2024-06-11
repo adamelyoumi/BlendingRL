@@ -1,18 +1,21 @@
 import numpy as np
 import gymnasium as gym
 # from gymnasium import spaces
-from gymnasium.spaces import Box, Dict
+from gymnasium.spaces import Box, Dict, Discrete, MultiDiscrete
 from gymnasium.utils import seeding
 from or_gym.utils import assign_env_config
 import json
-import torch as t
+import torch as th
+import torch.nn as nn
+import torch.nn.functional as F
 import os, sys
 
 """
     Penalties to add (?):
         -
     Continuous reward: is it really a problem ?
-    Are changes only going to be related to supply and demand, or also tank number and connections ?
+    Are changes only going to be related to supply and demand, or also tank number and connections ? 
+        Only supply/demand
 """
 
 def clip(x,a,b):
@@ -61,6 +64,12 @@ def reconstruct_dict(flattened_array, mappings, separator=';'):
     
     return reconstructed_dict
 
+def get_index(mapping, L):
+    for i, items in mapping:
+        if items == L:
+            return(i)
+    raise Exception("Specified list not in mapping")
+
 
 
 class PoolEnv(gym.Env):
@@ -105,7 +114,7 @@ class PoolEnv(gym.Env):
         
         if self.mask:
             self.observation_space = Dict({
-                "action_mask": ...,
+                "action_masks_dict": ...,
                 "avail_actions": ...,
                 "state": obs_space
                 })
@@ -136,34 +145,38 @@ class PoolEnv(gym.Env):
 
 class BlendEnv(gym.Env):
     def __init__(self, *args, **kwargs):
+        """
+        
+        Args:
+            M (int) : Penalty constant incurred for breaking in/out rule. Defulats to 1e3
+            Q (int) : Penalty constant incurred for breaking concentrations reqs. Defulats to 1e3
+            P (int) : Penalty constant incurred for breaking tank bounds reqs. Defulats to 1e2
+            B (int) : Penalty constant incurred for breaking buy/sell bouds reqs. Defulats to 1e2
+            Z (int) : Positive reward multiplier to emphasize that "selling is good". Defulats to 1e3
+            D (int) : Multiplier representing the influence of the depth. Defulats to 1
+            v (bool): Verbose. Defaults to False
+            connections (dict) : Specifies connection graph and tank names
+            action_samples (dict) : Action example for action space definition
+        
+        """
         super().__init__()
         
         self.T = 6
         self.alpha = 0.1
         self.beta = 0
         self.v = False # Verbose
-        self.logfile = None # Set it to a path to redirect logging to a file
         
-        # Defining logging function
-        self.logg = lambda *args: print(*args) if self.v else lambda *args: None
-        # if self.v and self.logfile is not None:
-        #     try:
-        #         os.remove(self.logfile)
-        #     except:
-        #         pass
-        #     f = open(self.logfile, "+a")
-        #     self.logg = lambda *args: print(*args, file=f)
-        # elif self.v:
-        #     self.logg = lambda *args: print(*args)
-        # else:
-        #     self.logg = lambda *args: None
-            
         
-        self.M = 1e3 # Negative reward (penalty) constant factor
-        self.P = 1e2 # Negative reward (penalty) constant factor (small)
-        self.Z = 1e4 # Positive reward multiplier to emphasize that "selling is good"
+        self.M = 1e3 # Negative reward (penalty) constant factor for breaking in/out rule
+        self.Q = 1e3 # Negative reward (penalty) constant factor for breaking concentrations reqs
+        self.P = 1e2 # Negative reward (penalty) constant factor for breaking tank bounds reqs
+        self.B = 1e2 # Negative reward (penalty) constant factor for breaking buy/sell bouds reqs
+        self.Z = 1e3 # Positive reward multiplier to emphasize that "selling is good"
+        self.D = 1   # Multiplier representing the influence of the depth
+        self.E = 0   # Constant added after each step ()
         
-        self.MAXFLOW = 150
+        
+        self.MAXFLOW = 50
         self.determ = True
         
         with open("./connections_sample.json" ,"r") as f:
@@ -174,10 +187,6 @@ class BlendEnv(gym.Env):
         
         self.tau0   = {'s1': [10, 10, 10, 0, 0, 0],  's2': [30, 30, 30, 0, 0, 0]}
         self.delta0 = {'p1': [0, 0, 15, 15, 15, 15], 'p2': [0, 0, 15, 15, 15, 15]}
-        
-        self.sources = list(self.tau0.keys())
-        self.demands = list(self.delta0.keys())
-        self.blenders = list(self.connections["blend_blend"].keys())
         
         self.sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}} # Source concentrations
         self.sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}} # Demand concentrations UBs/LBs
@@ -192,74 +201,51 @@ class BlendEnv(gym.Env):
         self.betaT_s = {'s1': 0, 's2': 0} # Cost of bought products
         
         self.b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30, "j5": 20, "j6": 20, "j7": 20, "j8": 20} 
-        self.b_inv_lb = {j:0 for j in self.blenders} 
+        self.b_inv_lb = {j:0 for j in self.b_inv_ub.keys()} 
+        
+        self.forecast_window_len = self.T
+        
+        with open("./action_sample.json" ,"r") as f:
+            action = f.readline()
+        self.action_sample = json.loads(action)
         
         
         assign_env_config(self, kwargs)
         
+        
+        self.sources = list(self.tau0.keys())
+        self.demands = list(self.delta0.keys())
+        self.blenders = list(self.connections["blend_blend"].keys())
+        
+        for s in self.sources:
+            self.tau0[s].append(0)
+        for p in self.demands:
+            self.delta0[p].append(0)
+        
+        
+        self.depths = {"s1": self.D*1, "s2": self.D*1,
+                       "j1": self.D*2, "j2": self.D*2, "j3": self.D*2, "j4": self.D*2, 
+                       "j5": self.D*3, "j6": self.D*3, "j7": self.D*3, "j8": self.D*3,
+                       "p1": self.D*4, "p2": self.D*4}
         
         self.reset() # sets state, reward, t, done
         
         self.flatt_state, self.mapping_obs = flatten_and_track_mappings(self.state)
         self.observation_space = Box(low=0, high=self.MAXFLOW, shape=(self.flatt_state.shape[0],))
         
-        with open("./action_sample.json" ,"r") as f:
-            action = f.readline()
-        action = json.loads(action)
         
-        # self.logg("ACTION:",action)
-        
-        
-        # self.logg("action before sanitizing:", action)
-        # action = self.sanitize_action_structure(action, pen = False) # sanitizing to avoid format inconsistencies
-        # self.logg("action after sanitizing:",action)
-        
-        self.flatt_act_sample, self.mapping_act = flatten_and_track_mappings(action)
+        self.flatt_act_sample, self.mapping_act = flatten_and_track_mappings(self.action_sample)
         # self.logg(f"action space shape: {len(self.flatt_act_sample)}")
         self.action_space = Box(low=0, high=self.MAXFLOW, shape=(len(self.flatt_act_sample),))
+        # self.action_space = Dict({"a": Box(low=0, high=self.MAXFLOW, shape=(len(self.flatt_act_sample),))})
         
-        
-    def step(self, action: t.Tensor):
+    def step(self, action: th.Tensor):
         """
         The state is kept track of in a human-readable dict "self.state"
         After updating it from the action, we flatten it and return it along with the reward and "done"
 
         Args:
             action (torch.Tensor): model output
-        """
-        """
-        action_sample = {
-            'source_blend':{
-                's1': {'j1':0, 'j2':0, 'j3':0, 'j4':0}, # From s1 to b1, from s1 to b2 etc...
-                's2': {'j1':0, 'j2':0, 'j3':0, 'j4':0},
-            },
-            
-            'blend_blend':{
-                'j1': {'j5':0, 'j6':0, 'j7':0, 'j8':0},
-                'j2': {'j5':0, 'j6':0, 'j7':0, 'j8':0},
-                'j3': {'j5':0, 'j6':0, 'j7':0, 'j8':0},
-                'j4': {'j5':0, 'j6':0, 'j7':0, 'j8':0},
-                'j5': {},
-                'j6': {},
-                'j7': {},
-                'j8': {}
-            },
-            
-            'blend_demand':{
-                'j1': {},
-                'j2': {},
-                'j3': {},
-                'j4': {},
-                'j5': {'p1':0, 'p2':0},
-                'j6': {'p1':0, 'p2':0},
-                'j7': {'p1':0, 'p2':0},
-                'j8': {'p1':0, 'p2':0}
-            },
-            
-            "tau": {"s1": 0, "s2": 0},
-            
-            "delta": {"p1": 0, "p2": 0}
-        }
         """
         
         self.t += 1
@@ -276,39 +262,58 @@ class BlendEnv(gym.Env):
         
         prev_blend_invs = self.state["blenders"]
         
-
-        for s in self.sources:
-            newinv = self.state["sources"][s] - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()]) + action["tau"][s]
-            if newinv > self.s_inv_ub[s]:
-                action["tau"][s] -= newinv - self.s_inv_ub[s]
-                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
-                self.reward -= self.P 
-            elif newinv < self.s_inv_lb[s]:
-                action["tau"][s] += self.s_inv_lb[s] - newinv
-                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too little (resulting amount less than source tank LB)")
-                self.reward -= self.P
-                
-            action["tau"][s] = clip(action["tau"][s], 0, self.state["sources_avail_next"][s])
-            
-            self.state["sources"][s] = self.state["sources"][s] - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()]) + action["tau"][s]
         
+        for s in self.sources:
+            
+            # I + t - (x+y) > M: I + at - (x+y) = M => a = (M+(x+y)-I)/t
+            # I + t - (x+y) < m: I + t - b(x+y) = m => b = (I+t-m)/(x+y)
+            
+            outgoing = sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()])
+            newinv = self.state["sources"][s] - outgoing + action["tau"][s]
+            # Enforcing bounds
+            if newinv > self.s_inv_ub[s]: # inv too high -> reduce bought amount
+                self.logg(f"{s}: newtau: {self.s_inv_ub[s] + outgoing - self.state['sources'][s]}")
+                action["tau"][s] = self.s_inv_ub[s] + outgoing - self.state["sources"][s]
+                
+                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
+                self.reward -= self.B
+            elif newinv < self.s_inv_lb[s]: # inv too low -> reduce outgoing amount
+                b = (self.state["sources"][s] + action["tau"][s] - self.s_inv_lb[s])/outgoing
+                self.logg(f"{s}: b: {b}")
+                for j in action["source_blend"][s].keys():
+                    action["source_blend"][s][j] *= b
+                
+                self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too little (resulting amount less than source tank LB)")
+                self.reward -= self.B
+
+            # Giving reward depending on depths            
+            incr = self.depths[s] * max(0, newinv - self.state["sources"][s])
+            self.logg(f"Increased reward by {incr} through tank population in {s}")
+            self.reward += incr
+            
+            # Updating inv
+            newinv = self.state["sources"][s] - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()]) + action["tau"][s]
+            self.state["sources"][s] = clip(newinv, self.s_inv_lb[s], self.s_inv_ub[s])
         
         for j in self.blenders:
+            # Computing inflow and outflow
             in_flow_sources = in_flow_blend = out_flow_blend = out_flow_demands = 0
             for s in self.sources:
                 if j in action["source_blend"][s].keys():
                     in_flow_sources += action["source_blend"][s][j]
             for jp in self.blenders:
-                if j in action["blend_blend"][jp].keys():
+                if "blend_blend" in action.keys() and j in action["blend_blend"][jp].keys():
                     in_flow_blend += action["blend_blend"][jp][j]
-                if jp in action["blend_blend"][j].keys():
+                if "blend_blend" in action.keys() and jp in action["blend_blend"][j].keys():
                     out_flow_blend += action["blend_blend"][j][jp]
             for p in self.demands:
                 if p in action["blend_demand"][j].keys():
                     out_flow_demands += action["blend_demand"][j][p]
             
+            self.logg(f"{j}: inv: {self.state['blenders'][j]}, in_flow_sources: {in_flow_sources}, in_flow_blend: {in_flow_blend}, out_flow_blend: {out_flow_blend}, out_flow_demands: {out_flow_demands}")
+            
             # Enforcing No in and out flow
-            if (in_flow_sources>0 or in_flow_blend>0) and (out_flow_blend>0 or out_flow_demands>0):
+            if (in_flow_sources + in_flow_blend > 0) and (out_flow_blend + out_flow_demands > 0):
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tIn and out flow both non-zero (in: {round(in_flow_sources + in_flow_blend, 2)}, out: {round(out_flow_blend + out_flow_demands, 2)})")
                 self.reward -= self.M
                 
@@ -318,9 +323,9 @@ class BlendEnv(gym.Env):
                     if j in action["source_blend"][s].keys():
                         action["source_blend"][s][j] = 0
                 for jp in self.blenders:
-                    if j in action["blend_blend"][jp].keys():
+                    if "blend_blend" in action.keys() and j in action["blend_blend"][jp].keys():
                         action["blend_blend"][jp][j] = 0
-                    if jp in action["blend_blend"][j].keys():
+                    if "blend_blend" in action.keys() and jp in action["blend_blend"][j].keys():
                         action["blend_blend"][j][jp] = 0
                 for p in self.demands:
                     if p in action["blend_demand"][j].keys():
@@ -329,65 +334,111 @@ class BlendEnv(gym.Env):
                 continue # Inventory does not change
             
             # else...
+            in_flow_sources = max(0, in_flow_sources)
+            in_flow_blend = max(0, in_flow_blend)
+            out_flow_blend = max(0, out_flow_blend)
+            out_flow_demands = max(0, out_flow_demands)
             newinv = self.state["blenders"][j] + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
+            
+            # I + w+x-(y+z) > M : I + a(w+x) - (y+z) = M  =>  a = (M+y+z-I)/(w+x)
+            # I + w+x-(y+z) < m : I + (w+x) - b(y+z) = m  =>  b = (I+w+x-m)/(y+z)
             
             # Enforcing inventory bounds
             # NB: we assume "no in and out" rule is respected
-            # if one of these two "if" conditions is verified, no change is made to the tank
-            if newinv > self.b_inv_ub[j]:
-                # newinv -= in_flow_sources + in_flow_blend
-                # Setting in flows to 0
+            if newinv > self.b_inv_ub[j]: # inv too high -> reduce incoming amount
+                self.logg(action)
+                a = (self.b_inv_ub[j] + out_flow_blend + out_flow_demands - self.state["blenders"][j])/(in_flow_sources + in_flow_blend)
+                self.logg(f"{j}: a: {a}")
                 for s in self.sources:
                     if j in action["source_blend"][s].keys():
-                        action["source_blend"][s][j] = 0    # in_flow_sources = 0
+                        action["source_blend"][s][j] *= a
                 for jp in self.blenders:
-                    if j in action["blend_blend"][jp].keys():
-                        action["blend_blend"][jp][j] = 0    # in_flow_blend = 0
+                    if "blend_blend" in action.keys() and j in action["blend_blend"][jp].keys():
+                        action["blend_blend"][jp][j] *= a
                 
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount more than blending tank UB)")
                 self.reward -= self.P
+                self.logg(action)
                 continue
                 
-            elif newinv < self.b_inv_lb[j]:
-                # newinv += out_flow_blend + out_flow_demands
+            elif newinv < self.b_inv_lb[j]: # inv too low -> reduce outgoing amount
+                b = (self.state["blenders"][j] + in_flow_sources + in_flow_blend - self.b_inv_lb[j])/(out_flow_blend + out_flow_demands)
+                self.logg(f"{j}: b: {b}")
                 for jp in self.blenders:
-                    if jp in action["blend_blend"][j].keys():
-                        action["blend_blend"][j][jp] = 0 # out_flow_blend = 0
+                    if "blend_blend" in action.keys() and jp in action["blend_blend"][j].keys():
+                        action["blend_blend"][j][jp] *= b
                 for p in self.demands:
                     if p in action["blend_demand"][j].keys():
-                        action["blend_demand"][j][p] = 0 # out_flow_demand = 0
+                        action["blend_demand"][j][p] *= b
                         
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount less than blending tank LB)")
                 self.reward -= self.P
-                continue
             
             # No ifs triggered
-            self.state["blenders"][j] = newinv
+            incr = self.depths[j] * max(0, newinv - self.state["blenders"][j])
+            self.logg(f"Increased reward by {incr} through tank population in {j}")
+            self.reward += incr
             
+            # Computing rectified newinv
+            in_flow_sources = in_flow_blend = out_flow_blend = out_flow_demands = 0
+            for s in self.sources:
+                if j in action["source_blend"][s].keys():
+                    in_flow_sources += action["source_blend"][s][j]
+            for jp in self.blenders:
+                if "blend_blend" in action.keys() and j in action["blend_blend"][jp].keys():
+                    in_flow_blend += action["blend_blend"][jp][j]
+                if "blend_blend" in action.keys() and jp in action["blend_blend"][j].keys():
+                    out_flow_blend += action["blend_blend"][j][jp]
+            for p in self.demands:
+                if p in action["blend_demand"][j].keys():
+                    out_flow_demands += action["blend_demand"][j][p]
+                    
+            newinv = self.state["blenders"][j] + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
+            self.state["blenders"][j] = clip(newinv, self.b_inv_lb[j], self.b_inv_ub[j])
             
-            
+        
         for p in self.demands:
-            in_flow_blend = 0
+            
+            # I + (x+y)-d > M: I + a(x+y) - d = M  =>  a = (M+d-I)/(x+y)
+            # I + (x+y)-d < m: I + (x+y) - bd = m  =>  b = (I+(x+y)-m)/d
+            
+            incoming = 0
             for jp in self.blenders:
                 if p in action["blend_demand"][jp].keys():
-                    in_flow_blend += action["blend_demand"][jp][p]
+                    incoming += action["blend_demand"][jp][p]
             
-            newinv = self.state["demands"][p] + in_flow_blend - action["delta"][p] 
+            newinv = self.state["demands"][p] + incoming - action["delta"][p] 
             
             # Enforcing inventory bounds
-            if newinv > self.d_inv_ub[p]:
-                action["delta"][p] += newinv - self.d_inv_ub[p]
-                self.reward -= self.P
+            if newinv > self.d_inv_ub[p]: # inv too high -> reduce incoming amount
+                a = (self.d_inv_ub[p] + action["delta"][p] - self.state["demands"][p])/incoming
+                self.logg(f"{p}: a: {a}")
+                
+                for jp in self.blenders:
+                    if p in action["blend_demand"][jp].keys():
+                        action["blend_demand"][jp][p] *= a
+                        
+                self.reward -= self.B
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too little (resulting amount more than demand tank UB)")
                 
-            elif newinv < self.d_inv_lb[p]:
-                action["delta"][p] -= self.d_inv_lb[p] - newinv
-                self.reward -= self.P
+            elif newinv < self.d_inv_lb[p]:  # inv too low -> reduce sold amount
+                self.logg(f"{p}: newdelta: {self.state['demands'][p] + incoming - self.d_inv_lb[p]}")
+                action["delta"][p] = self.state["demands"][p] + incoming - self.d_inv_lb[p]
+                
+                self.reward -= self.B
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than demand tank LB)")
-
-            action["delta"][p] = clip(action["delta"][p], 0, self.state["demands_avail_next"][p])
             
-            self.state["demands"][p] = self.state["demands"][p] + in_flow_blend - action["delta"][p] 
+            
+            incr = self.depths[p] * max(0, newinv - self.state["demands"][p])
+            self.logg(f"Increased reward by {incr} through tank population in {p}")
+            self.reward += incr
+            
+            for jp in self.blenders:
+                if p in action["blend_demand"][jp].keys():
+                    incoming += action["blend_demand"][jp][p]
+            newinv = self.state["demands"][p] + incoming - action["delta"][p] 
+            self.state["demands"][p] = clip(newinv, self.d_inv_lb[p], self.d_inv_ub[p])
+            
         
         # Properties                      
         for j in self.blenders:
@@ -400,9 +451,9 @@ class BlendEnv(gym.Env):
                         if j in action["source_blend"][s].keys():
                             in_flow_sources += action["source_blend"][s][j] * self.sigma[s][q]
                     for jp in self.blenders:
-                        if j in action["blend_blend"][jp].keys():
+                        if "blend_blend" in action.keys() and j in action["blend_blend"][jp].keys():
                             in_flow_blend += action["blend_blend"][jp][j] * self.state["properties"][jp][q]
-                        if jp in action["blend_blend"][j].keys():
+                        if "blend_blend" in action.keys() and jp in action["blend_blend"][j].keys():
                             out_flow_blend += action["blend_blend"][j][jp] * self.state["properties"][jp][q]
                     for p in self.demands:
                         if p in action["blend_demand"][j].keys():
@@ -413,17 +464,18 @@ class BlendEnv(gym.Env):
                                                     + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
                                                 )
         
-        # action = self.penalize_action_postflows(action)
         
         self.update_reward(action)
         
+        for s in self.sources:
+            for k in range(self.forecast_window_len):
+                self.state[f"sources_avail_next_{k}"][s] = self.tau0[s][k + self.t] if k+ self.t < self.T else 0
         
         for p in self.demands:
-            self.state["demands_avail_next"][p] = self.delta0[p][self.t]
+            for k in range(self.forecast_window_len):
+                self.state[f"demands_avail_next_{k}"][p] = self.delta0[p][k + self.t] if k+ self.t < self.T else 0
         
-        for s in self.sources:
-            self.state["sources_avail_next"][s] = self.tau0[s][self.t]
-            
+        self.state["t"] = self.t
         
         self.flatt_state, _ = flatten_and_track_mappings(self.state)
         
@@ -436,19 +488,19 @@ class BlendEnv(gym.Env):
         return self.flatt_state, self.reward, self.done, False, {"dict_state": self.state}
     
     def get_new_start_state_deterministic(self):
-        self.tau0   = {'s1': [10, 10, 10, 0, 0, 0, 0],  's2': [30, 30, 30, 0, 0, 0, 0]} # An extra 0 to avoid indexerror (because the first value has to be in the starting state)
-        self.delta0 = {'p1': [0, 0, 15, 15, 15, 15, 0], 'p2': [0, 0, 15, 15, 15, 15, 0]}
         
         self.state = {
             "sources": {s:0 for s in self.sources},
             "blenders": {b:0 for b in self.blenders},
             "demands": {p:0 for p in self.demands},
-            "properties": {b: {q:0 for q in self.properties} for b in self.blenders},
-            # How much we can buy at the current timestamp. Noted as "F^{IN}_{s,t}" in the paper
-            "sources_avail_next": {s: self.tau0[s][0]   for s in self.sources},
-            # How much we can sell at the current timestamp. Noted as "FD^L_{p,t}" in the paper
-            "demands_avail_next": {p: self.delta0[p][0] for p in self.demands}
+            "properties": {b: {q:0 for q in self.properties} for b in self.blenders}
         }
+        
+        for k in range(self.forecast_window_len):
+            self.state[f"sources_avail_next_{k}"] = {s: self.tau0[s][k]   for s in self.sources}
+            self.state[f"demands_avail_next_{k}"] = {p: self.delta0[p][k] for p in self.demands}
+            
+        self.state["t"] = self.t
     
     def get_new_start_state_probabilistic(self, seed):
         
@@ -467,9 +519,9 @@ class BlendEnv(gym.Env):
             "demands": {p:0 for p in self.demands},
             "properties": {b: {q:0 for q in self.properties} for b in self.blenders},
             # How much we can buy at the current timestamp. Noted as "F^{IN}_{s,t}" in the paper
-            "sources_avail_next": {s: self.tau0[s][0]   for s in self.sources},
+            "sources_avail_next": {s: self.tau0[s][:self.forecast_window_len]   for s in self.sources},
             # How much we can sell at the current timestamp. Noted as "FD^L_{p,t}" in the paper
-            "demands_avail_next": {p: self.delta0[p][0] for p in self.demands}  
+            "demands_avail_next": {p: self.delta0[p][:self.forecast_window_len] for p in self.demands}  
         }
         
     
@@ -481,8 +533,11 @@ class BlendEnv(gym.Env):
             action (dict): See action_sample.json .
         """
         Q_float = Q_bin = 0
-        
-        for k in ["source_blend", "blend_blend", "blend_demand"]:
+        if "blend_blend" in action.keys():
+            L = ["source_blend", "blend_blend", "blend_demand"]
+        else:
+            L = ["source_blend", "blend_demand"]
+        for k in L:
             for tank1 in action[k].keys():
                 for tank2 in action[k][tank1].keys():
                     Q_float += action[k][tank1][tank2]
@@ -505,18 +560,21 @@ class BlendEnv(gym.Env):
 
         self.reward += R2
         
+        self.reward += self.E # Once for each step
+        
     def penalty_quality(self, p, q, j, action):
         if (self.state["properties"][j][q] < self.sigma_lb[p][q] or self.state["properties"][j][q] > self.sigma_ub[p][q]) \
                 and (p in action["blend_demand"][j].keys() and action["blend_demand"][j][p] > 0):
             self.logg(f"[PEN] t{self.t}; {p}; {q}; {j}:\t\t\tSold qualities out of bounds ({round(self.state['properties'][j][q], 2)})")
-            return self.M
+            return self.Q
         return 0
     
     def penalty_in_out_flow(self, j, action):
         sum_in = sum_out = 0
-        for jp in self.blenders:
-            sum_in  += action["blend_blend"][jp][j] if j in action["blend_blend"][jp].keys() else 0
-            sum_out += action["blend_blend"][j][jp] if jp in action["blend_blend"][j].keys() else 0
+        if "blend_blend" in action.keys():
+            for jp in self.blenders:
+                sum_in  += action["blend_blend"][jp][j] if j in action["blend_blend"][jp].keys() else 0
+                sum_out += action["blend_blend"][j][jp] if jp in action["blend_blend"][j].keys() else 0
         
         for s in self.sources:
             sum_in  += action["source_blend"][s][j] if j in action["source_blend"][s].keys() else 0
@@ -538,6 +596,8 @@ class BlendEnv(gym.Env):
         Args:
             action (dict): Action dict
         """
+        if "blend_blend" not in action.keys():
+            return(action)
         
         for j in self.blenders:
             if j not in action["blend_blend"].keys():
@@ -545,8 +605,7 @@ class BlendEnv(gym.Env):
             if j not in action["blend_demand"].keys():
                 action["blend_demand"][j] = {}
         return(action)
-    
-    
+        
     def penalize_action_preflows(self, action, pen = True):
         """Add Penalty if the action is illegal (before flows are processed).
         Includes penalties related to the model proposing to buy/sell more product than the demands/sources allow (not inventory).
@@ -558,16 +617,16 @@ class BlendEnv(gym.Env):
         
         # Add penalty and log if trying to buy too much product
         for s in self.sources:
-            if action["tau"][s] > self.state["sources_avail_next"][s]:
-                action["tau"][s] = self.state["sources_avail_next"][s]
-                self.reward -= self.P if pen else 0 # incur penalty
+            if action["tau"][s] > self.state["sources_avail_next_0"][s]:
+                action["tau"][s] = self.state["sources_avail_next_0"][s]
+                self.reward -= self.B if pen else 0 # incur penalty
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (more than supply)")
         
         # Add penalty and log if trying to sell too much product (more than available demand or more than available inventory)
         for p in self.demands:
-            if action["delta"][p] > self.state["demands_avail_next"][p]:
-                action["delta"][p] = self.state["demands_avail_next"][p]
-                self.reward -= self.P if pen else 0 # incur penalty
+            if action["delta"][p] > self.state["demands_avail_next_0"][p]:
+                action["delta"][p] = self.state["demands_avail_next_0"][p]
+                self.reward -= self.B if pen else 0 # incur penalty
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (more than demand)")
         
         return action
@@ -589,7 +648,7 @@ class BlendEnv(gym.Env):
                 
             if action["tau"][s] > self.s_inv_ub[s] - self.state["sources"][s]:
                 action["tau"][s] = self.state["sources"][s]
-                self.reward -= self.P if pen else 0 # incur penalty
+                self.reward -= self.B if pen else 0 # incur penalty
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
                 
         for j in self.blenders:
@@ -606,7 +665,7 @@ class BlendEnv(gym.Env):
                 
             if action["delta"][p] > self.state["demands"][p] - self.d_inv_lb[p]:
                 action["delta"][p] = self.state["demands"][p]
-                self.reward -= self.P if pen else 0 # incur penalty
+                self.reward -= self.B if pen else 0 # incur penalty
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than tank LB)")
                 
                 # tau = 50
@@ -623,7 +682,6 @@ class BlendEnv(gym.Env):
         
         return s_b_flows, b_b_flows, b_d_flows, delta
         
-    
     
     def reset(self, seed=0):
         self.t = 0
@@ -670,3 +728,73 @@ class BlendEnv(gym.Env):
         print(Oi)
             
         print("\n\n\n\nReward:", self.reward)
+        
+    def logg(self, *args):
+        if self.v:
+            print(*args)
+        return
+        
+        
+class MaskedBlendEnv(BlendEnv):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        self.action_space = MultiDiscrete(len(self.flatt_act_sample)*[int((self.MAXFLOW/5)+1)])
+        
+        self.act_mask      = th.ones(self.action_space.shape[0], dtype=th.float32)
+        self.act_mask_dict = reconstruct_dict(self.act_mask, self.mapping_act)
+        
+    def step(self, action):
+        action = action * 5
+        obs, reward, done, term, info = super().step(action)
+        
+        self.action_masks()
+        
+        return obs, reward, done, term, info
+        
+    def action_masks(self):
+        self.act_mask      = th.tensor([1] * self.action_space.shape[0], dtype=th.float32)
+        self.act_mask_dict = reconstruct_dict(self.act_mask, self.mapping_act)
+        
+        for s in self.sources:
+            if self.state["sources"][s] == self.s_inv_lb:  # No outgoing flow
+                for jp in self.act_mask_dict["source_blend"][s].keys():
+                    self.act_mask_dict["source_blend"][s][jp] = 0
+                    
+            if self.state["sources"][s] == self.s_inv_ub or self.state["sources_avail_next_0"] == 0:  # No incoming flow
+                self.act_mask_dict["tau"][s] = 0
+            
+                
+        for j in self.blenders:
+            if self.state["blenders"][j] == self.b_inv_lb:  # No outgoing flow
+                if j in self.act_mask_dict["blend_blend"].keys():
+                    for jp in self.act_mask_dict["blend_blend"][j].keys():
+                        self.act_mask_dict["blend_blend"][j][jp] = 0
+                if j in self.act_mask_dict["blend_demand"].keys():
+                    for p in self.act_mask_dict["blend_demand"][j].keys():
+                        self.act_mask_dict["blend_demand"][j][p] = 0
+            
+            if self.state["blenders"][j] == self.b_inv_ub:  # No incoming flow
+                for jp in self.act_mask_dict["blend_blend"].keys():
+                    if j in self.act_mask_dict["blend_blend"][jp].keys():
+                        self.act_mask_dict["blend_blend"][jp][j] = 0
+                for s in self.act_mask_dict["source_blend"].keys():
+                    self.act_mask_dict["source_blend"][s][j] = 0
+                
+                
+        for p in self.demands:
+            if self.state["demands"][p] == self.d_inv_lb or self.state["demands_avail_next_0"] == 0: # No outgoing flow
+                self.act_mask_dict["delta"][p] = 0
+                
+            if self.state["demands"][p] == self.d_inv_ub:  # No incoming flow
+                for jp in self.act_mask_dict["blend_demand"].keys():
+                    self.act_mask_dict["blend_demand"][jp][p] = 0
+                    
+        self.act_mask, _ = flatten_and_track_mappings(self.act_mask_dict)
+        
+        L = []
+        for k in self.act_mask:
+            L.append([k]*int((self.MAXFLOW/5)+1))
+            L[-1][0] = 1
+        
+        return np.array(L, dtype=np.float32)
