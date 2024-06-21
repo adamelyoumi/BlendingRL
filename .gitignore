@@ -4,3 +4,5 @@
 /arrays/*
 /logs/
 /models/*
+/__pycache__/*
+/.vscode/
