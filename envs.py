@@ -148,12 +148,12 @@ class BlendEnv(gym.Env):
         """
         
         Args:
-            M (int) : Penalty constant incurred for breaking in/out rule. Defulats to 1e3
-            Q (int) : Penalty constant incurred for breaking concentrations reqs. Defulats to 1e3
-            P (int) : Penalty constant incurred for breaking tank bounds reqs. Defulats to 1e2
-            B (int) : Penalty constant incurred for breaking buy/sell bouds reqs. Defulats to 1e2
-            Z (int) : Positive reward multiplier to emphasize that "selling is good". Defulats to 1e3
-            D (int) : Multiplier representing the influence of the depth. Defulats to 1
+            M (int) : Penalty constant incurred for breaking in/out rule. Defulats to 1e3. Set to 0 for "normal" behavior
+            Q (int) : Penalty constant incurred for breaking concentrations reqs. Defulats to 1e3. Set to 0 for "normal" behavior
+            P (int) : Penalty constant incurred for breaking tank bounds reqs. Defulats to 1e2. Set to 0 for "normal" behavior
+            B (int) : Penalty constant incurred for breaking buy/sell bounds reqs. Defulats to 1e2. Set to 0 for "normal" behavior
+            Z (int) : Positive reward multiplier to emphasize that "selling is good". Defulats to 1e3. Set to 1 for "normal" behavior
+            D (int) : Multiplier representing the influence of the depth. Defulats to 1. Set to 0 for "normal" behavior
             v (bool): Verbose. Defaults to False
             connections (dict) : Specifies connection graph and tank names
             action_samples (dict) : Action example for action space definition
@@ -174,7 +174,7 @@ class BlendEnv(gym.Env):
         self.Z = 1e3 # Positive reward multiplier to emphasize that "selling is good"
         self.D = 1   # Multiplier representing the influence of the depth
         self.E = 0   # Constant added after each step ()
-        
+        self.eps = 1e-2 # Tolerance for breaking in/out rule
         
         self.MAXFLOW = 50
         self.determ = True
@@ -295,6 +295,9 @@ class BlendEnv(gym.Env):
             newinv = self.state["sources"][s] - sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()]) + action["tau"][s]
             self.state["sources"][s] = clip(newinv, self.s_inv_lb[s], self.s_inv_ub[s])
         
+        
+        # self.logg("Action after processing sources:", action)
+        
         for j in self.blenders:
             # Computing inflow and outflow
             in_flow_sources = in_flow_blend = out_flow_blend = out_flow_demands = 0
@@ -313,7 +316,7 @@ class BlendEnv(gym.Env):
             self.logg(f"{j}: inv: {self.state['blenders'][j]}, in_flow_sources: {in_flow_sources}, in_flow_blend: {in_flow_blend}, out_flow_blend: {out_flow_blend}, out_flow_demands: {out_flow_demands}")
             
             # Enforcing No in and out flow
-            if (in_flow_sources + in_flow_blend > 0) and (out_flow_blend + out_flow_demands > 0):
+            if (in_flow_sources + in_flow_blend > self.eps) and (out_flow_blend + out_flow_demands > self.eps):
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tIn and out flow both non-zero (in: {round(in_flow_sources + in_flow_blend, 2)}, out: {round(out_flow_blend + out_flow_demands, 2)})")
                 self.reward -= self.M
                 
@@ -358,8 +361,6 @@ class BlendEnv(gym.Env):
                 
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount more than blending tank UB)")
                 self.reward -= self.P
-                self.logg(action)
-                continue
                 
             elif newinv < self.b_inv_lb[j]: # inv too low -> reduce outgoing amount
                 b = (self.state["blenders"][j] + in_flow_sources + in_flow_blend - self.b_inv_lb[j])/(out_flow_blend + out_flow_demands)
@@ -374,7 +375,6 @@ class BlendEnv(gym.Env):
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount less than blending tank LB)")
                 self.reward -= self.P
             
-            # No ifs triggered
             incr = self.depths[j] * max(0, newinv - self.state["blenders"][j])
             self.logg(f"Increased reward by {incr} through tank population in {j}")
             self.reward += incr
@@ -396,6 +396,8 @@ class BlendEnv(gym.Env):
             newinv = self.state["blenders"][j] + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
             self.state["blenders"][j] = clip(newinv, self.b_inv_lb[j], self.b_inv_ub[j])
             
+        
+        # self.logg("Action after processing blenders:", action)
         
         for p in self.demands:
             
@@ -433,12 +435,19 @@ class BlendEnv(gym.Env):
             self.logg(f"Increased reward by {incr} through tank population in {p}")
             self.reward += incr
             
+            incoming = 0
             for jp in self.blenders:
                 if p in action["blend_demand"][jp].keys():
                     incoming += action["blend_demand"][jp][p]
+            
+            # self.logg("xxx", newinv, clip(newinv, self.d_inv_lb[p], self.d_inv_ub[p]), self.state["demands"][p], incoming, action["delta"][p], self.state["blenders"]["j1"])
+            
             newinv = self.state["demands"][p] + incoming - action["delta"][p] 
             self.state["demands"][p] = clip(newinv, self.d_inv_lb[p], self.d_inv_ub[p])
             
+            # self.logg(self.state)
+        
+        # self.logg("Action after processing demands:", action)
         
         # Properties                      
         for j in self.blenders:
@@ -582,7 +591,7 @@ class BlendEnv(gym.Env):
         for p in self.demands:
             sum_out += action["blend_demand"][j][p] if p in action["blend_demand"][j].keys() else 0
             
-        if sum_in > 0 and sum_out > 0: # /!\
+        if sum_in > self.eps and sum_out > self.eps: # /!\
             self.logg(f"[PEN] t{self.t}; {j}:\t\t\tIn and out flow both non-zero (in: {round(sum_in, 2)}, out:{round(sum_out, 2)})")
             return self.M
         
@@ -798,3 +807,50 @@ class MaskedBlendEnv(BlendEnv):
             L[-1][0] = 1
         
         return np.array(L, dtype=np.float32)
+
+
+tau0   = {'s1': [10, 10, 10, 0, 0, 0]}
+delta0 = {'p1': [0, 0, 0, 10, 10, 10]}
+sigma = {"s1":{"q1": 0.06}} # Source concentrations
+sigma_ub = {"p1":{"q1": 0.16}} # Demand concentrations UBs/LBs
+sigma_lb = {"p1":{"q1": 0}}
+s_inv_lb = {'s1': 0}
+s_inv_ub = {'s1': 999}
+d_inv_lb = {'p1': 0}
+d_inv_ub = {'p1': 999}
+betaT_d = {'p1': 1} # Price of sold products
+betaT_s = {'s1': 0} # Cost of bought products
+b_inv_ub = {"j1": 30} 
+b_inv_lb = {j:0 for j in b_inv_ub.keys()} 
+
+connections = {
+    "source_blend": {"s1": ["j1"]},
+    "blend_blend": {"j1": []},
+    "blend_demand": {"j1": ["p1"]}
+}
+
+action_sample = {
+    'source_blend':{'s1': {'j1':1}},
+    'blend_blend':{},
+    'blend_demand':{'j1': {'p1':1}},
+    "tau": {"s1": 10},
+    "delta": {"p1": 0}
+}
+
+simplestenv = BlendEnv(v = False, 
+               D=0, Q = 0, P = 0, B = 0, Z = 1E4, M = 1E3,
+               connections = connections, 
+               action_sample = action_sample,
+               tau0 = tau0,
+               delta0 = delta0,
+               sigma = sigma,
+               sigma_ub = sigma_ub,
+               sigma_lb = sigma_lb,
+               s_inv_lb = s_inv_lb,
+               s_inv_ub = s_inv_ub,
+               d_inv_lb = d_inv_lb,
+               d_inv_ub = d_inv_ub,
+               betaT_d = betaT_d,
+               betaT_s = betaT_s,
+               b_inv_ub = b_inv_ub,
+               b_inv_lb = b_inv_lb)
