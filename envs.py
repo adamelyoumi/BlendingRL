@@ -3,7 +3,6 @@ import gymnasium as gym
 # from gymnasium import spaces
 from gymnasium.spaces import Box, Dict, Discrete, MultiDiscrete
 from gymnasium.utils import seeding
-from or_gym.utils import assign_env_config
 import json
 import torch as th
 import torch.nn as nn
@@ -17,6 +16,21 @@ import os, sys
     Are changes only going to be related to supply and demand, or also tank number and connections ? 
         Only supply/demand
 """
+
+def assign_env_config(self, kwargs):
+    for key, value in kwargs.items():
+        setattr(self, key, value)
+    if hasattr(self, 'env_config'):
+        for key, value in self.env_config.items():
+            # Check types based on default settings
+            if hasattr(self, key):
+                if type(getattr(self,key)) == np.ndarray:
+                    setattr(self, key, value)
+                else:
+                    setattr(self, key,
+                        type(getattr(self, key))(value))
+            else:
+                raise AttributeError(f"{self} has no attribute, {key}")
 
 def clip(x,a,b):
     if x>b:
@@ -167,14 +181,15 @@ class BlendEnv(gym.Env):
         self.v = False # Verbose
         
         
-        self.M = 1e3 # Negative reward (penalty) constant factor for breaking in/out rule
-        self.Q = 1e3 # Negative reward (penalty) constant factor for breaking concentrations reqs
-        self.P = 1e2 # Negative reward (penalty) constant factor for breaking tank bounds reqs
-        self.B = 1e2 # Negative reward (penalty) constant factor for breaking buy/sell bouds reqs
-        self.Z = 1e3 # Positive reward multiplier to emphasize that "selling is good"
-        self.D = 1   # Multiplier representing the influence of the depth
-        self.E = 0   # Constant added after each step ()
-        self.eps = 1e-2 # Tolerance for breaking in/out rule
+        self.M = 1e3        # Negative reward (penalty) constant factor for breaking in/out rule
+        self.Q = 1e3        # Negative reward (penalty) constant factor for breaking concentrations reqs
+        self.P = 1e2        # Negative reward (penalty) constant factor for breaking tank bounds reqs
+        self.B = 1e2        # Negative reward (penalty) constant factor for breaking buy/sell bouds reqs
+        self.Y = 1          # Positive reward multiplier to emphasize that "buying is good"
+        self.Z = 1e3        # Positive reward multiplier to emphasize that "selling is good"
+        self.D = 1          # Multiplier representing the influence of the depth
+        self.E = 0          # Constant added after each step
+        self.eps = 1e-2     # Tolerance for breaking in/out rule
         
         self.MAXFLOW = 50
         self.determ = True
@@ -259,6 +274,8 @@ class BlendEnv(gym.Env):
         action = self.sanitize_action_structure(action) # Modify action according to chosen rules (ex: set flows < 0.1 to 0 etc)
         
         action = self.penalize_action_preflows(action)
+        
+        self.update_reward1(action)
         
         prev_blend_invs = self.state["blenders"]
         
@@ -474,7 +491,7 @@ class BlendEnv(gym.Env):
                                                 )
         
         
-        self.update_reward(action)
+        self.update_reward2(action)
         
         for s in self.sources:
             for k in range(self.forecast_window_len):
@@ -534,7 +551,7 @@ class BlendEnv(gym.Env):
         }
         
     
-    def update_reward(self, action):
+    def update_reward1(self, action):
         """
             Follows the definition/structure of the Overleaf Document
 
@@ -552,22 +569,23 @@ class BlendEnv(gym.Env):
                     Q_float += action[k][tank1][tank2]
                     Q_bin += 1 if action[k][tank1][tank2] > 0 else 0 
                     
-        Q = self.alpha * Q_bin + self.beta * Q_float
+        self.reward -+ (self.alpha * Q_bin + self.beta * Q_float)
         
-        R1 = -Q
+    def update_reward2(self, action):
+        R2 = 0
+        
         for p in self.demands:
-            R1 += self.betaT_d[p] * action["delta"][p] * self.Z
+            R2 += self.betaT_d[p] * action["delta"][p] * self.Z
         for s in self.sources:
-            R1 -= self.betaT_s[s] * action["tau"][s] * 1        # 1 for now: no need to emphasize buying
-        
-        R2 = R1
+            R2 -= self.betaT_s[s] * action["tau"][s] * self.Y
+            
         for j in self.blenders:
-            R2 -= self.penalty_in_out_flow(j, action)
+            R2 += self.penalty_in_out_flow(j, action)
             for q in self.properties:
                 for p in self.demands:
-                    R2 -= self.penalty_quality(p, q, j, action)
+                    R2 += self.penalty_quality(p, q, j, action)
 
-        self.reward += R2
+        self.reward -= R2
         
         self.reward += self.E # Once for each step
         
@@ -742,7 +760,36 @@ class BlendEnv(gym.Env):
         if self.v:
             print(*args)
         return
+
+
+class BlendEnv2(BlendEnv):
+    def step(self, action):
         
+        # We penalize before the flows are adjusted to incentivize controlled flows 
+        
+        Q_float = Q_bin = 0
+        if "blend_blend" in action.keys():
+            L = ["source_blend", "blend_blend", "blend_demand"]
+        else:
+            L = ["source_blend", "blend_demand"]
+        for k in L:
+            for tank1 in action[k].keys():
+                for tank2 in action[k][tank1].keys():
+                    Q_float += action[k][tank1][tank2]
+                    Q_bin += 1 if action[k][tank1][tank2] > 0 else 0 
+                    
+        Q = self.alpha * Q_bin + self.beta * Q_float
+        
+        R1 = -Q
+        for p in self.demands:
+            R1 += self.betaT_d[p] * action["delta"][p] * self.Z
+        for s in self.sources:
+            R1 -= self.betaT_s[s] * action["tau"][s] * self.Y
+        
+        self.reward += R1
+        
+        super().step(action)
+
         
 class MaskedBlendEnv(BlendEnv):
     def __init__(self, *args, **kwargs):

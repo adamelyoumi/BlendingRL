@@ -7,6 +7,9 @@ env:
   P: 0
   Q: 0
   Z: 100
+  alpha: 0.1
+  beta: 0
+  maxflow: 50
   product_cost: 0
 id: 3
 model:
@@ -21,3 +24,4 @@ obs_normalizer: false
 optimizer: PPO
 policytype: MLP
 reward_normalizer: true
+starting_point: null
