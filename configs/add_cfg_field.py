@@ -4,9 +4,9 @@ import os
 import yaml
 
 
-attrib_name_1 = 'env'
-attrib_name_2 = 'maxflow'
-default_value = 50
+attrib_name_1 = 'model'
+attrib_name_2 = 'use_sde'
+default_value = False
 
 folder_path = './configs'
 
@@ -41,4 +41,5 @@ def remove(attrib_name_1, attrib_name_2 = None):
                 yaml.dump(data, f)
                 
 if __name__ == "__main__":
-    add()
+    add(attrib_name_1, default_value, attrib_name_2)
+    # remove(attrib_name_1, attrib_name_2)

@@ -11,6 +11,8 @@ env:
   beta: 0
   maxflow: 50
   product_cost: 0
+  reg: 0
+  reg_lambda: 1
 id: 14
 model:
   act_fn: ReLU
@@ -20,6 +22,7 @@ model:
   ent_coef: 0.0003
   log_std_init: -2
   lr: 0.01
+  use_sde: false
 obs_normalizer: false
 optimizer: PPO
 policytype: MLP

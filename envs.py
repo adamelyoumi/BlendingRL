@@ -181,16 +181,18 @@ class BlendEnv(gym.Env):
         self.v = False # Verbose
         
         
-        self.M = 1e3        # Negative reward (penalty) constant factor for breaking in/out rule
-        self.Q = 1e3        # Negative reward (penalty) constant factor for breaking concentrations reqs
-        self.P = 1e2        # Negative reward (penalty) constant factor for breaking tank bounds reqs
-        self.B = 1e2        # Negative reward (penalty) constant factor for breaking buy/sell bouds reqs
-        self.Y = 1          # Positive reward multiplier to emphasize that "buying is good"
-        self.Z = 1e3        # Positive reward multiplier to emphasize that "selling is good"
-        self.D = 1          # Multiplier representing the influence of the depth
-        self.E = 0          # Constant added after each step
-        self.eps = 1e-2     # Tolerance for breaking in/out rule
+        self.M = 1e3            # Negative reward (penalty) constant factor for breaking in/out rule
+        self.Q = 1e3            # Negative reward (penalty) constant factor for breaking concentrations reqs
+        self.P = 1e2            # Negative reward (penalty) constant factor for breaking tank bounds reqs
+        self.B = 1e2            # Negative reward (penalty) constant factor for breaking buy/sell bouds reqs
+        self.Y = 1              # Positive reward multiplier to emphasize that "buying is good"
+        self.Z = 1e3            # Positive reward multiplier to emphasize that "selling is good"
+        self.D = 1              # Multiplier representing the influence of the depth
+        self.E = 0              # Constant added after each step
+        self.eps = 1e-2         # Tolerance for breaking in/out rule
         
+        self.reg = 0            # Regularization type. 0 for no reg, 1 for L1 reg., 2 for L2 etc
+        self.reg_lambda = 1     # Regularization factor
         self.MAXFLOW = 50
         self.determ = True
         
@@ -267,7 +269,11 @@ class BlendEnv(gym.Env):
         if self.t == self.T:
             self.done = True
         
-        # Updating demands before sanitizing action (important to avoid off-by-one)
+        # Applying regularization before adjusting action
+        
+        regularization_term = self.reg_lambda * (th.norm(th.Tensor(action), p=self.reg).item() if self.reg else 0)
+        self.reward -= regularization_term
+        self.pen_tracker["reg"] -= regularization_term
         
         action = action.tolist()
         action = reconstruct_dict(action, self.mapping_act) # From non-human-readable list to human-readable dict
@@ -294,6 +300,7 @@ class BlendEnv(gym.Env):
                 
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
                 self.reward -= self.B
+                self.pen_tracker["B"] -= self.B
             elif newinv < self.s_inv_lb[s]: # inv too low -> reduce outgoing amount
                 b = (self.state["sources"][s] + action["tau"][s] - self.s_inv_lb[s])/outgoing
                 self.logg(f"{s}: b: {b}")
@@ -302,6 +309,7 @@ class BlendEnv(gym.Env):
                 
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too little (resulting amount less than source tank LB)")
                 self.reward -= self.B
+                self.pen_tracker["B"] -= self.B
 
             # Giving reward depending on depths            
             incr = self.depths[s] * max(0, newinv - self.state["sources"][s])
@@ -336,6 +344,7 @@ class BlendEnv(gym.Env):
             if (in_flow_sources + in_flow_blend > self.eps) and (out_flow_blend + out_flow_demands > self.eps):
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tIn and out flow both non-zero (in: {round(in_flow_sources + in_flow_blend, 2)}, out: {round(out_flow_blend + out_flow_demands, 2)})")
                 self.reward -= self.M
+                self.pen_tracker["M"] -= self.M
                 
                 # Choice: we remove all flows. We can also remove only outgoing flows, only incoming flows, or decide based on the tank's position
                 # (if the tank is connected to sources, then keep incoming flow, but if it is connected to demands, then keep outgoing flow)
@@ -378,6 +387,7 @@ class BlendEnv(gym.Env):
                 
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount more than blending tank UB)")
                 self.reward -= self.P
+                self.pen_tracker["P"] -= self.P
                 
             elif newinv < self.b_inv_lb[j]: # inv too low -> reduce outgoing amount
                 b = (self.state["blenders"][j] + in_flow_sources + in_flow_blend - self.b_inv_lb[j])/(out_flow_blend + out_flow_demands)
@@ -391,6 +401,7 @@ class BlendEnv(gym.Env):
                         
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount less than blending tank LB)")
                 self.reward -= self.P
+                self.pen_tracker["P"] -= self.P
             
             incr = self.depths[j] * max(0, newinv - self.state["blenders"][j])
             self.logg(f"Increased reward by {incr} through tank population in {j}")
@@ -438,6 +449,7 @@ class BlendEnv(gym.Env):
                         action["blend_demand"][jp][p] *= a
                         
                 self.reward -= self.B
+                self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too little (resulting amount more than demand tank UB)")
                 
             elif newinv < self.d_inv_lb[p]:  # inv too low -> reduce sold amount
@@ -445,6 +457,7 @@ class BlendEnv(gym.Env):
                 action["delta"][p] = self.state["demands"][p] + incoming - self.d_inv_lb[p]
                 
                 self.reward -= self.B
+                self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than demand tank LB)")
             
             
@@ -511,7 +524,7 @@ class BlendEnv(gym.Env):
         #     self.flatt_state[k] = max(0, self.flatt_state[k]) 
         
         
-        return self.flatt_state, self.reward, self.done, False, {"dict_state": self.state}
+        return self.flatt_state, self.reward, self.done, False, {"dict_state": self.state, "pen_tracker": self.pen_tracker}
     
     def get_new_start_state_deterministic(self):
         
@@ -647,6 +660,7 @@ class BlendEnv(gym.Env):
             if action["tau"][s] > self.state["sources_avail_next_0"][s]:
                 action["tau"][s] = self.state["sources_avail_next_0"][s]
                 self.reward -= self.B if pen else 0 # incur penalty
+                self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (more than supply)")
         
         # Add penalty and log if trying to sell too much product (more than available demand or more than available inventory)
@@ -654,11 +668,13 @@ class BlendEnv(gym.Env):
             if action["delta"][p] > self.state["demands_avail_next_0"][p]:
                 action["delta"][p] = self.state["demands_avail_next_0"][p]
                 self.reward -= self.B if pen else 0 # incur penalty
+                self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (more than demand)")
         
         return action
     
     def penalize_action_postflows(self, action, pen = True):
+        ########## UNUSED ##########
         """Add Penalty if the action is illegal (after flows are processed but BEFORE product is sold/bought)
         Includes penalties related to the model proposing to buy/sell more product than the demands/sources allow (inventory), 
         Fix illegal state accordingly
@@ -676,6 +692,7 @@ class BlendEnv(gym.Env):
             if action["tau"][s] > self.s_inv_ub[s] - self.state["sources"][s]:
                 action["tau"][s] = self.state["sources"][s]
                 self.reward -= self.B if pen else 0 # incur penalty
+                self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
                 
         for j in self.blenders:
@@ -693,6 +710,7 @@ class BlendEnv(gym.Env):
             if action["delta"][p] > self.state["demands"][p] - self.d_inv_lb[p]:
                 action["delta"][p] = self.state["demands"][p]
                 self.reward -= self.B if pen else 0 # incur penalty
+                self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than tank LB)")
                 
                 # tau = 50
@@ -721,8 +739,10 @@ class BlendEnv(gym.Env):
         self.reward = 0
         self.done = False
         
+        self.pen_tracker = {"M": 0, "B": 0, "P": 0, "reg": 0}
+        
         self.flatt_state, _ = flatten_and_track_mappings(self.state)
-        return self.flatt_state, {"dict_state": self.state}
+        return self.flatt_state, {"dict_state": self.state, "pen_tracker": self.pen_tracker}
         
     def render(self, action = None):
         

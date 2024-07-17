@@ -8,16 +8,16 @@ env:
   Q: 0
   Z: 100
   alpha: 0.1
-  beta: 0
-  maxflow: 50
-  product_cost: 0
-  reg: 0
+  beta: 1
+  maxflow: 500
+  product_cost: 1
+  reg: 1
   reg_lambda: 1
-id: 13
+id: 15
 model:
   act_fn: ReLU
   arch_layersize: 128
-  arch_n: 6
+  arch_n: 4
   clip_range: 0.1
   ent_coef: 0.0001
   log_std_init: -2
@@ -25,6 +25,6 @@ model:
   use_sde: false
 obs_normalizer: false
 optimizer: PPO
-policytype: MLPtanh
+policytype: MLP
 reward_normalizer: true
 starting_point: null

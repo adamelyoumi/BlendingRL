@@ -15,58 +15,18 @@ import datetime
 
 warnings.filterwarnings("ignore")
 
-
-CONFIGS = [3, 12, 15, 16]
-N_TRIES = 4
-N_TIMESTEPS = 150000
-
-
-class CustomLoggingCallbackPPO(BaseCallback):
+class CustomLoggingCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self.log_stds = []
         self.total_rewards = []
+        self.signal = True
         self.update1 = True
         self.print_flag = False
-        
-        self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
-        
-    def _on_rollout_end(self) -> None:
-        self.logger.record('train/learning_rate', self.model.learning_rate)
-        self.logger.record('train/clip_range', self.model.clip_range(0))
-        
-        self.stds = th.exp(self.model.policy.log_std).mean().item()
-        
-        # if self.stds > 50:
-        #     print("clipping log-stds")
-        #     self.model.policy.log_std = th.nn.Parameter( 2*th.ones(self.model.policy.log_std.shape, requires_grad=True) )
-        
-        self.logger.record("train/std", th.exp(self.model.policy.log_std).mean().item())
-        self.logger.record("penalties/in_out", sum(self.pen_M)/len(self.pen_M))
-        self.logger.record("penalties/buysell_bounds", sum(self.pen_B)/len(self.pen_B))
-        self.logger.record("penalties/tank_bounds", sum(self.pen_P)/len(self.pen_P))
-        self.logger.record("penalties/regterm", sum(self.pen_reg)/len(self.pen_reg))
-        
-        self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
-        
+
     def _on_step(self) -> bool:
         log_std: th.Tensor = self.model.policy.log_std
-        # print(self.locals)
         t = self.locals["infos"][0]['dict_state']['t']
-        
-        if self.locals["dones"][0]: # record info at each episode end
-            self.pen_M.append(self.locals["infos"][0]["pen_tracker"]["M"])
-            self.pen_B.append(self.locals["infos"][0]["pen_tracker"]["B"])
-            self.pen_P.append(self.locals["infos"][0]["pen_tracker"]["P"])
-            self.pen_reg.append(self.locals["infos"][0]["pen_tracker"]["reg"])
-            
-            self.log_stds.append(log_std.mean().item())
-            self.total_rewards.append(self.locals['rewards'][0])
-            
-            if self.locals['rewards'][0] > 200 and self.update1:
-                self.model.learning_rate = 1e2
-                self.model.clip_range = 5e-2
-                self.update1 = False
         
         if self.num_timesteps%2048 < 6 and t == 1: # start printing
             self.print_flag = True
@@ -79,41 +39,83 @@ class CustomLoggingCallbackPPO(BaseCallback):
                 if i in self.locals:
                     print(f"{i}: " + str(self.locals[i]))
             if t == 6:
+                stds = th.exp(self.model.policy.log_std).mean().item()
+        
+                # if stds > 50:
+                #     print("clipping log-stds")
+                #     print("before: ", self.model.policy.log_std)
+                #     self.model.policy.log_std = nn.Parameter( 2*th.ones(self.model.policy.log_std.shape, requires_grad=True) )
+                #     print("after: ",  self.model.policy.log_std)
+                    
+                self.logger.record('train/learning_rate', self.model.learning_rate)
+                self.logger.record('train/clip_range', self.model.clip_range(0))
+                self.logger.record("train/std", th.exp(self.model.policy.log_std).mean().item())
+                
+                # if self.locals['rewards'][0] > 200 and self.update1:
+                #     # self.training_env.set_attr('', 1e2)
+                #     self.model.learning_rate = 1e2
+                #     self.model.clip_range = 5e-2
+                #     self.update1 = False
+                
                 self.print_flag = False
                 print(f"\n\nLog-Std at step {self.num_timesteps}: {log_std.detach().numpy()}")
-                # print(f"\nAvg rewards over the last 100 episodes:{sum(self.total_rewards[-100:])/100} ; last reward: {self.total_rewards[-1]}")
-                print("\n\n\n\n\n")
+                self.log_stds.append(log_std.mean().item())
+                self.total_rewards.append(self.locals['rewards'][0])
+                print(f"\nAvg rewards over the last 100 episodes:{sum(self.total_rewards[-100:])/100} ; last reward: {self.total_rewards[-1]}")
+                self.model.learning_rate
+                print("\n\n\n\n\n\n")
                 
         return True
 
+CONFIGS = [3,12]
+N_TRIES = 5
+N_TIMESTEPS = 150000
+
 connections = {
-    "source_blend": {"s1": ["j1"]},
-    "blend_blend": {"j1": []},
-    "blend_demand": {"j1": ["p1"]}
+    "source_blend": {
+        "s1": ["j1", "j2", "j3", "j4"],
+        "s2": ["j1", "j2", "j3", "j4"]
+    },
+    "blend_blend": {"j1": [], "j2": [], "j3": [], "j4": []},
+    "blend_demand": {"j1": ["p1", "p2"],
+        "j2": ["p1", "p2"],
+        "j3": ["p1", "p2"],
+        "j4": ["p1", "p2"]
+    }
 }
 
 action_sample = {
-    'source_blend':{'s1': {'j1':1}},
+    'source_blend':{
+        's1': {'j1':1, 'j2':1, 'j3':1, 'j4':0}, # From s1 to b1, from s1 to b2 etc...
+        's2': {'j1':1, 'j2':1, 'j3':0, 'j4':1},
+    },
     'blend_blend':{},
-    'blend_demand':{'j1': {'p1':1}},
-    "tau": {"s1": 10},
-    "delta": {"p1": 0}
+    'blend_demand':{
+        'j1': {'p1':1, 'p2':0},
+        'j2': {'p1':1, 'p2':2},
+        'j3': {'p1':1, 'p2':2},
+        'j4': {'p1':1, 'p2':2}
+    },
+    "tau": {"s1": 10, "s2": 10},
+    "delta": {"p1": 0, "p2": 0}
 }
+action_sample_flat, _ = flatten_and_track_mappings(action_sample)
 
 action_sample_flat, mapp = flatten_and_track_mappings(action_sample)
 
-tau0   = {'s1': [10, 10, 10, 0, 0, 0]}
-delta0 = {'p1': [0, 0, 0, 10, 10, 10]}
-sigma = {"s1":{"q1": 0.06}} # Source concentrations
-sigma_ub = {"p1":{"q1": 0.16}} # Demand concentrations UBs/LBs
-sigma_lb = {"p1":{"q1": 0}}
-s_inv_lb = {'s1': 0}
-s_inv_ub = {'s1': 999}
-d_inv_lb = {'p1': 0}
-d_inv_ub = {'p1': 999}
-betaT_d = {'p1': 1} # Price of sold products
-b_inv_ub = {"j1": 30} 
+tau0   = {'s1': [10, 10, 10, 0, 0, 0], 's2': [10, 10, 10, 0, 0, 0]}
+delta0 = {'p1': [0, 0, 0, 10, 10, 10], 'p2': [0, 0, 0, 10, 10, 10]}
+sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}} # Source concentrations
+sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 0.16}} # Demand concentrations UBs/LBs
+sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
+s_inv_lb = {'s1': 0, 's2': 0}
+s_inv_ub = {'s1': 999, 's2': 999}
+d_inv_lb = {'p1': 0, 'p2': 0}
+d_inv_ub = {'p1': 999, 'p2': 999}
+betaT_d = {'p1': 1, 'p2': 1} # Price of sold products
+b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30} 
 b_inv_lb = {j:0 for j in b_inv_ub.keys()}
+
 
 for train_id in CONFIGS:
     for t in range(N_TRIES):
@@ -121,32 +123,26 @@ for train_id in CONFIGS:
             with open(f"configs/{train_id}.yaml", "r") as f:
                 s = "".join(f.readlines())
                 cfg = yaml.load(s, Loader=yaml.FullLoader)
-
-
-            betaT_s = {'s1': cfg["env"]["product_cost"]} # Cost of bought products
+                
+            betaT_s = {'s1': cfg["env"]["product_cost"], 's2': cfg["env"]["product_cost"]} # Cost of bought products
 
             env = BlendEnv(v = False, 
-                    D = cfg["env"]["D"], 
-                    Q = cfg["env"]["Q"], 
-                    P = cfg["env"]["P"], 
-                    B = cfg["env"]["B"], 
-                    Z = cfg["env"]["Z"], 
-                    M = cfg["env"]["M"],
-                    reg = cfg["env"]["reg"],
-                    reg_lambda = cfg["env"]["reg_lambda"],
-                    MAXFLOW = cfg["env"]["maxflow"],
-                    alpha = cfg["env"]["alpha"],
-                    beta = cfg["env"]["beta"],
-                    connections = connections,
-                    action_sample = action_sample,
-                    tau0 = tau0,delta0 = delta0,
-                    sigma = sigma,
-                    sigma_ub = sigma_ub, sigma_lb = sigma_lb,
-                    s_inv_lb = s_inv_lb, s_inv_ub = s_inv_ub,
-                    d_inv_lb = d_inv_lb, d_inv_ub = d_inv_ub,
-                    betaT_d = betaT_d, betaT_s = betaT_s,
-                    b_inv_ub = b_inv_ub,
-                    b_inv_lb = b_inv_lb)
+                        D = cfg["env"]["D"], 
+                        Q = cfg["env"]["Q"], 
+                        P = cfg["env"]["P"], 
+                        B = cfg["env"]["B"], 
+                        Z = cfg["env"]["Z"], 
+                        M = cfg["env"]["M"],
+                        connections = connections, 
+                        action_sample = action_sample,
+                        tau0 = tau0,delta0 = delta0,
+                        sigma = sigma,
+                        sigma_ub = sigma_ub, sigma_lb = sigma_lb,
+                        s_inv_lb = s_inv_lb, s_inv_ub = s_inv_ub,
+                        d_inv_lb = d_inv_lb, d_inv_ub = d_inv_ub,
+                        betaT_d = betaT_d, betaT_s = betaT_s,
+                        b_inv_ub = b_inv_ub,
+                        b_inv_lb = b_inv_lb)
 
             env = Monitor(env)
             env = DummyVecEnv([lambda: env])
@@ -194,9 +190,9 @@ for train_id in CONFIGS:
                 
             entcoef = str(model.ent_coef) if type(model) == PPO else ""
             cliprange = str(model.clip_range(0)) if type(model) == PPO else ""
-            model_name = f"models/{cfg['id']}_{datetime.datetime.now().strftime('%m%d-%H%M')}"
+            model_name = f"models/{cfg['id']}_simplest_{datetime.datetime.now().strftime('%m%d-%H%M')}"
 
-            log_std_callback = CustomLoggingCallbackPPO()
+            log_std_callback = CustomLoggingCallback()
 
             print(f"logging at {model_name}")
             
@@ -211,25 +207,20 @@ for train_id in CONFIGS:
 
             M,Q,P,B,Z,D = 0, 0, 0, 0, 1, 0
             env = BlendEnv(v = True, 
-                        D = cfg["env"]["D"], 
-                        Q = cfg["env"]["Q"], 
-                        P = cfg["env"]["P"], 
-                        B = cfg["env"]["B"], 
-                        Z = cfg["env"]["Z"], 
-                        M = cfg["env"]["M"],
-                        reg = cfg["env"]["reg"],
-                        reg_lambda = cfg["env"]["reg_lambda"],
-                        MAXFLOW = cfg["env"]["maxflow"],
-                        alpha = cfg["env"]["alpha"],
-                        beta = cfg["env"]["beta"],
-                        connections = connections,
-                        action_sample = action_sample,
-                        tau0 = tau0,delta0 = delta0,
+                        M = M, Q = Q, P = P, B = B, Z = Z, D = D, 
+                        action_sample = action_sample, 
+                        connections = connections, 
+                        tau0 = tau0,
+                        delta0 = delta0,
                         sigma = sigma,
-                        sigma_ub = sigma_ub, sigma_lb = sigma_lb,
-                        s_inv_lb = s_inv_lb, s_inv_ub = s_inv_ub,
-                        d_inv_lb = d_inv_lb, d_inv_ub = d_inv_ub,
-                        betaT_d = betaT_d, betaT_s = betaT_s,
+                        sigma_ub = sigma_ub,
+                        sigma_lb = sigma_lb,
+                        s_inv_lb = s_inv_lb,
+                        s_inv_ub = s_inv_ub,
+                        d_inv_lb = d_inv_lb,
+                        d_inv_ub = d_inv_ub,
+                        betaT_d = betaT_d,
+                        betaT_s = betaT_s,
                         b_inv_ub = b_inv_ub,
                         b_inv_lb = b_inv_lb)
             env = Monitor(env)
