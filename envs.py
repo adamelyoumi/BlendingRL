@@ -247,7 +247,11 @@ class BlendEnv(gym.Env):
         
         self.reset() # sets state, reward, t, done
         
+        # print("sss", self.state)
+        
         self.flatt_state, self.mapping_obs = flatten_and_track_mappings(self.state)
+        
+        # print(self.mapping_obs)
         self.observation_space = Box(low=0, high=self.MAXFLOW, shape=(self.flatt_state.shape[0],))
         
         

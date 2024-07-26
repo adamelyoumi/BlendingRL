@@ -1,8 +1,4 @@
 /blendv/
-/blendvRAY/
-/or-gym/
-/arrays/*
-/logs/
 /models/*
-/__pycache__/*
+__pycache__/
 /.vscode/

@@ -16,9 +16,9 @@ import datetime
 warnings.filterwarnings("ignore")
 
 
-CONFIGS = [3, 12, 15, 16]
-N_TRIES = 4
-N_TIMESTEPS = 150000
+CONFIGS = [12, 15, 16]
+N_TRIES = 3
+N_TIMESTEPS = 120000
 
 
 class CustomLoggingCallbackPPO(BaseCallback):
