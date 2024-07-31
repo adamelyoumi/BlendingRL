@@ -7,6 +7,10 @@ from stable_baselines3.common.torch_layers import FlattenExtractor
 from stable_baselines3 import PPO
 from gymnasium import spaces 
 
+
+
+# Utilities
+
 def lr_scheduler(p):
     if p > 0.9:
         return 4e-2
@@ -39,6 +43,9 @@ def replace_columns(X: th.Tensor, Y: th.Tensor, indices: list):
     return X_new
 
 
+
+
+# Modules
 
 class CustomMLPPolicy(nn.Module):
     def __init__(self,
@@ -193,7 +200,9 @@ class CustomRNNPolicy(nn.Module):
         out = self.seq_vf(lstm_out[:, -1, :])
         return out
 
-   
+
+
+# Policies
     
 class CustomRNN_ACP(ActorCriticPolicy):
     def _build_mlp_extractor(self):
@@ -261,6 +270,10 @@ class CustomMLP_ACP_simplest_softmax(ActorCriticPolicy):
         # self.log_std = th.clip(self.log_std, 0, self.log_std_init + 2)
         return actions, values, log_prob
 
+
+
+# Algorithms
+
 class CustomPPO(PPO):
     def train(self):
         super().train()
@@ -305,6 +318,37 @@ def make_my_proba_distribution(
             " Must be of type Gym Spaces: Box, Discrete, MultiDiscrete or MultiBinary."
         )
 
+
+
+# Imitation learning models
+
+class IL_MLP_simple(nn.Module):
+    def __init__(self,
+                dims = [64, 64],
+                act_cls = nn.ReLU,
+                *args,
+                **kwargs):
+        super().__init__()
+
+        IN_DIM, OUT_DIM = 37, 20
+
+        layers = []
+        dims = [IN_DIM] + dims + [OUT_DIM]
+        
+        for k in range(len(dims)-1):
+            layers.append(nn.Linear(in_features = dims[k], out_features = dims[k+1]))
+            layers.append(act_cls())
+        
+        self.latent_dim_pi = dims[-1]
+            
+        self.model_pi = nn.Sequential(*layers)
+    
+    def forward(self, x: th.Tensor):
+        x = self.model_pi(x)
+        
+        # x = 50 * th.nn.functional.tanh(x)
+        
+        return x
 
 if __name__ == "__main__":
     # model = PPO(CustomMLP_ACP_simplest, "CartPole-v1", verbose=1)

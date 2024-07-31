@@ -1,4 +1,0 @@
-Even with the simplest environment (1S, 1B, 1P), the MLP model fails to learn the in/out rule.
-It learns Gaussians with very high stds (log_std ~= 9) so action predictions are essentially random, so actions are essentially 0 or MAXFLOW with chance 1/2
-Tried Tanh/ReLU activations
-Need different network architecture ?
