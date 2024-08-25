@@ -86,88 +86,19 @@ def get_index(mapping, L):
 
 
 
-class PoolEnv(gym.Env):
-    
-    def __init__(self, *args, **kwargs):
-        
-        """
-        
-            Implementation of the Pooling Problem Environment
-            See page 41 of https://optimization-online.org/wp-content/uploads/2015/04/4864.pdf
-            
-            Flow connection graph (adjacencies)                                                   : fixed for a given Env instance.
-            Costs, Initial concentrations, prices, concentration requirements, max requirement    : in observation (randomized). 1 episode = 1 step
-            F_{i,j}, F_X, F_Y                                                                     : to be provided by the model (the action)
-            Reward                                                                                : Calculated from costs & prices
-            
-        """
-        
-        self.N_pool = 1
-        self.N_supply = 3
-        self.N_demand = 2
-        
-        self.s2t = {("s3", "t1"),
-                    ("s3", "t2")}
-        
-        self.s2p = {("s1", "p1"),
-                    ("s2", "p1")}
-        
-        self.p2t = {("p1", "t1"),
-                    ("p1", "t2")}
-        
-        ### TODO ###
-        
-        assign_env_config(self, kwargs)
-        self.set_seed()
-        
-        self.N = self.N_blending + self.N_supply + self.N_demand
-
-        obs_space = ...
-        
-        self.action_space = ...
-        
-        if self.mask:
-            self.observation_space = Dict({
-                "action_masks_dict": ...,
-                "avail_actions": ...,
-                "state": obs_space
-                })
-        else:
-            self.observation_space = ...
-        
-        self.reset()
-        
-    
-    def sample_action(self):
-        return
-
-    def reset(self):
-        return
-
-    def step(self, action):
-        return
-        
-    def render(self):
-        return True
-
-    
-    def set_seed(self, seed=None):
-        if seed == None:
-            seed = np.random.randint(0, np.iinfo(np.int32).max)        
-        self.np_random, seed = seeding.np_random(seed)
-        return [seed]
 
 class BlendEnv(gym.Env):
     def __init__(self, *args, **kwargs):
         """
         
         Args:
-            M (int) : Penalty constant incurred for breaking in/out rule. Defulats to 1e3. Set to 0 for "normal" behavior
-            Q (int) : Penalty constant incurred for breaking concentrations reqs. Defulats to 1e3. Set to 0 for "normal" behavior
-            P (int) : Penalty constant incurred for breaking tank bounds reqs. Defulats to 1e2. Set to 0 for "normal" behavior
-            B (int) : Penalty constant incurred for breaking buy/sell bounds reqs. Defulats to 1e2. Set to 0 for "normal" behavior
-            Z (int) : Positive reward multiplier to emphasize that "selling is good". Defulats to 1e3. Set to 1 for "normal" behavior
-            D (int) : Multiplier representing the influence of the depth. Defulats to 1. Set to 0 for "normal" behavior
+            M (int) : Penalty constant incurred for breaking in/out rule. Defaults to 1e3. Set to 0 for "normal" behavior
+            Q (int) : Penalty constant incurred for breaking concentrations reqs. Defaults to 1e3. Set to 0 for "normal" behavior
+            P (int) : Penalty constant incurred for breaking tank bounds reqs. Defaults to 1e2. Set to 0 for "normal" behavior
+            B (int) : Penalty constant incurred for breaking buy/sell bounds reqs. Defaults to 1e2. Set to 0 for "normal" behavior
+            Z (int) : Positive reward multiplier to emphasize that "selling is good". Defaults to 1e3. Set to 1 for "normal" behavior
+            D (int) : Multiplier representing the influence of the depth. Defaults to 1. Set to 0 for "normal" behavior
+            Y (int) : Positive reward multiplier to emphasize that "buying is good". Defaults to 1. Set to 1 for "normal" behavior
             v (bool): Verbose. Defaults to False
             connections (dict) : Specifies connection graph and tank names
             action_samples (dict) : Action example for action space definition
@@ -180,23 +111,21 @@ class BlendEnv(gym.Env):
         self.beta = 0
         self.v = False # Verbose
         
-        
         self.M = 1e3            # Negative reward (penalty) constant factor for breaking in/out rule
         self.Q = 1e3            # Negative reward (penalty) constant factor for breaking concentrations reqs
         self.P = 1e2            # Negative reward (penalty) constant factor for breaking tank bounds reqs
         self.B = 1e2            # Negative reward (penalty) constant factor for breaking buy/sell bouds reqs
-        self.Y = 1              # Positive reward multiplier to emphasize that "buying is good"
         self.Z = 1e3            # Positive reward multiplier to emphasize that "selling is good"
         self.D = 1              # Multiplier representing the influence of the depth
-        self.E = 0              # Constant added after each step
-        self.eps = 1e-2         # Tolerance for breaking in/out rule
+        self.Y = 1              # Positive reward multiplier to emphasize that "buying is good"
         
+        self.eps = 1e-2         # Tolerance for breaking in/out rule
         self.reg = 0            # Regularization type. 0 for no reg, 1 for L1 reg., 2 for L2 etc
         self.reg_lambda = 1     # Regularization factor
         self.MAXFLOW = 50
         self.determ = True
         
-        with open("./connections_sample.json" ,"r") as f:
+        with open("./configs/json/connections.json" ,"r") as f:
             connections_s = f.readline()
         self.connections = json.loads(connections_s)
         
@@ -220,9 +149,9 @@ class BlendEnv(gym.Env):
         self.b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30, "j5": 20, "j6": 20, "j7": 20, "j8": 20} 
         self.b_inv_lb = {j:0 for j in self.b_inv_ub.keys()} 
         
-        self.forecast_window_len = self.T
+        self.forecast_window_len = 6
         
-        with open("./action_sample.json" ,"r") as f:
+        with open("./configs/json/action_sample.json" ,"r") as f:
             action = f.readline()
         self.action_sample = json.loads(action)
         
@@ -315,9 +244,11 @@ class BlendEnv(gym.Env):
                 self.reward -= self.B
                 self.pen_tracker["B"] -= self.B
 
-            # Giving reward depending on depths            
+            # Giving reward depending on depths
+            
             incr = self.depths[s] * max(0, newinv - self.state["sources"][s])
-            self.logg(f"Increased reward by {incr} through tank population in {s}")
+            if self.D:
+                self.logg(f"Increased reward by {incr} through tank population in {s}")
             self.reward += incr
             
             # Updating inv
@@ -408,7 +339,8 @@ class BlendEnv(gym.Env):
                 self.pen_tracker["P"] -= self.P
             
             incr = self.depths[j] * max(0, newinv - self.state["blenders"][j])
-            self.logg(f"Increased reward by {incr} through tank population in {j}")
+            if self.D:
+                self.logg(f"Increased reward by {incr} through tank population in {j}")
             self.reward += incr
             
             # Computing rectified newinv
@@ -466,7 +398,8 @@ class BlendEnv(gym.Env):
             
             
             incr = self.depths[p] * max(0, newinv - self.state["demands"][p])
-            self.logg(f"Increased reward by {incr} through tank population in {p}")
+            if self.D:
+                self.logg(f"Increased reward by {incr} through tank population in {p}")
             self.reward += incr
             
             incoming = 0
@@ -512,11 +445,11 @@ class BlendEnv(gym.Env):
         
         for s in self.sources:
             for k in range(self.forecast_window_len):
-                self.state[f"sources_avail_next_{k}"][s] = self.tau0[s][k + self.t] if k+ self.t < self.T else 0
+                self.state[f"sources_avail_next_{k}"][s] = self.tau0[s][k + self.t] if k + self.t < self.T else 0
         
         for p in self.demands:
             for k in range(self.forecast_window_len):
-                self.state[f"demands_avail_next_{k}"][p] = self.delta0[p][k + self.t] if k+ self.t < self.T else 0
+                self.state[f"demands_avail_next_{k}"][p] = self.delta0[p][k + self.t] if k + self.t < self.T else 0
         
         self.state["t"] = self.t
         
@@ -540,8 +473,8 @@ class BlendEnv(gym.Env):
         }
         
         for k in range(self.forecast_window_len):
-            self.state[f"sources_avail_next_{k}"] = {s: self.tau0[s][k]   for s in self.sources}
-            self.state[f"demands_avail_next_{k}"] = {p: self.delta0[p][k] for p in self.demands}
+            self.state[f"sources_avail_next_{k}"] = {s: self.tau0[s][k]   if k < self.T else 0 for s in self.sources}
+            self.state[f"demands_avail_next_{k}"] = {p: self.delta0[p][k] if k < self.T else 0 for p in self.demands}
             
         self.state["t"] = self.t
     
@@ -566,8 +499,7 @@ class BlendEnv(gym.Env):
             # How much we can sell at the current timestamp. Noted as "FD^L_{p,t}" in the paper
             "demands_avail_next": {p: self.delta0[p][:self.forecast_window_len] for p in self.demands}  
         }
-        
-    
+
     def update_reward1(self, action):
         """
             Follows the definition/structure of the Overleaf Document
@@ -584,9 +516,9 @@ class BlendEnv(gym.Env):
             for tank1 in action[k].keys():
                 for tank2 in action[k][tank1].keys():
                     Q_float += action[k][tank1][tank2]
-                    Q_bin += 1 if action[k][tank1][tank2] > 0 else 0 
+                    Q_bin   += 1 if action[k][tank1][tank2] > 0 else 0 
                     
-        self.reward -+ (self.alpha * Q_bin + self.beta * Q_float)
+        self.reward -= (self.alpha * Q_bin + self.beta * Q_float)
         
     def update_reward2(self, action):
         R2 = 0
@@ -597,14 +529,12 @@ class BlendEnv(gym.Env):
             R2 -= self.betaT_s[s] * action["tau"][s] * self.Y
             
         for j in self.blenders:
-            R2 += self.penalty_in_out_flow(j, action)
+            R2 -= self.penalty_in_out_flow(j, action)
             for q in self.properties:
                 for p in self.demands:
-                    R2 += self.penalty_quality(p, q, j, action)
+                    R2 -= self.penalty_quality(p, q, j, action)
 
-        self.reward -= R2
-        
-        self.reward += self.E # Once for each step
+        self.reward += R2
         
     def penalty_quality(self, p, q, j, action):
         if (self.state["properties"][j][q] < self.sigma_lb[p][q] or self.state["properties"][j][q] > self.sigma_ub[p][q]) \
@@ -721,16 +651,6 @@ class BlendEnv(gym.Env):
                 # state = 20
                 # ub = 60
                 # tau > ub-state
-                
-    
-    def load_gurobi_actions(self): # No "tau" !
-        s_b_flows = np.load("arrays/s_b_flows.npy")
-        b_b_flows = np.load("arrays/b_b_flows.npy")
-        b_d_flows = np.load("arrays/b_d_flows.npy")
-        delta = np.load("arrays/delta.npy")
-        
-        return s_b_flows, b_b_flows, b_d_flows, delta
-        
     
     def reset(self, seed=0):
         self.t = 0

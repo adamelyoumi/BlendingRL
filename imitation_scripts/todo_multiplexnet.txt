@@ -1,0 +1,8 @@
+- Understand which symbolic class to use in src\symbolic\symbolic.py
+    - A Between with [-eps, eps] if "equality" is not found
+- Write BaseSyntheticExperiment (in src\experiment\synthetic_experiments.py) derived class to specify constraints
+    - Use src\symbolic\symbolic.py for the constraints
+- Write run script like scripts\run_synthetic_data_experiments.py from the notebook
+
+
+x = -softplus(-softplus(x') + log(exp(b-a) - 1)) + b

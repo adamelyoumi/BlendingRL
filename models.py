@@ -8,7 +8,7 @@ from stable_baselines3 import PPO
 from gymnasium import spaces 
 
 
-
+# %%
 # Utilities
 
 def lr_scheduler(p):
@@ -44,7 +44,7 @@ def replace_columns(X: th.Tensor, Y: th.Tensor, indices: list):
 
 
 
-
+# %%
 # Modules
 
 class CustomMLPPolicy(nn.Module):
@@ -202,6 +202,7 @@ class CustomRNNPolicy(nn.Module):
 
 
 
+# %%
 # Policies
     
 class CustomRNN_ACP(ActorCriticPolicy):
@@ -272,12 +273,13 @@ class CustomMLP_ACP_simplest_softmax(ActorCriticPolicy):
 
 
 
+
+# %%
 # Algorithms
 
 class CustomPPO(PPO):
     def train(self):
         super().train()
-
 
 def make_my_proba_distribution(
     action_space: spaces.Space, use_sde: bool = False, use_squash: bool = False, dist_kwargs: Optional[Dict[str, Any]] = None
@@ -320,14 +322,12 @@ def make_my_proba_distribution(
 
 
 
+
+# %%
 # Imitation learning models
 
 class IL_MLP_simple(nn.Module):
-    def __init__(self,
-                dims = [64, 64],
-                act_cls = nn.ReLU,
-                *args,
-                **kwargs):
+    def __init__(self, dims = [128,128], act_cls = nn.ReLU):
         super().__init__()
 
         IN_DIM, OUT_DIM = 37, 20
@@ -339,8 +339,6 @@ class IL_MLP_simple(nn.Module):
             layers.append(nn.Linear(in_features = dims[k], out_features = dims[k+1]))
             layers.append(act_cls())
         
-        self.latent_dim_pi = dims[-1]
-            
         self.model_pi = nn.Sequential(*layers)
     
     def forward(self, x: th.Tensor):
@@ -349,6 +347,45 @@ class IL_MLP_simple(nn.Module):
         # x = 50 * th.nn.functional.tanh(x)
         
         return x
+
+class IL_RNN_simple(nn.Module):
+    def __init__(self, dims = [128,128], act_cls = nn.ReLU, num_layers = 2, hidden_size = 64):
+        super().__init__()
+
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+
+        self.lstm = nn.LSTM(input_size=1, hidden_size=self.hidden_size, num_layers=self.num_layers, batch_first=True)
+        
+        
+        self.IN_DIM, self.OUT_DIM = 37, 20
+        
+        layers = []
+        dims = [self.hidden_size] + dims + [self.OUT_DIM]
+        
+        for k in range(len(dims)-1):
+            layers.append(nn.Linear(in_features = dims[k], out_features = dims[k+1]))
+            layers.append(act_cls())
+        
+        self.latent_dim = dims[-1]
+            
+        self.linear = nn.Sequential(*layers)
+    
+    def forward(self, x: th.Tensor):
+        print(x.shape)
+        batch_size = x.size(0)
+        x = x.unsqueeze(0)
+        x = x.reshape(batch_size, self.IN_DIM, -1)
+        
+        h0_pi = th.zeros(self.num_layers, batch_size, self.hidden_size).to(x.device).detach()
+        c0_pi = th.zeros(self.num_layers, batch_size, self.hidden_size).to(x.device).detach()
+
+        lstm_out, _ = self.lstm(x, (h0_pi, c0_pi))
+
+        out = self.linear(lstm_out[:, -1, :])
+        return out
+
+
 
 if __name__ == "__main__":
     # model = PPO(CustomMLP_ACP_simplest, "CartPole-v1", verbose=1)

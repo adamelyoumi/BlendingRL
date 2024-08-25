@@ -3,10 +3,14 @@ import pandas as pd
 import random as rd
 import datetime, time
 import math as m
+import argparse
 
 from pyomo.environ import *
 
-N = 50
+parser = argparse.ArgumentParser()
+parser.add_argument('N')
+args = parser.parse_args() 
+N = int(args.N)
 
 T = 6
 alpha = 0.1
@@ -147,6 +151,8 @@ def gen_data_3(p=0.2):
     r = rd.randint(total_product//5, total_product//4)
     b_inv_ub = {b: r for b in blenders}
     return s_amounts, d_amounts, b_inv_ub, total_product, T
+
+
 
 for n in range(N):
     start = time.time()
@@ -380,9 +386,10 @@ for n in range(N):
     if solveinfo["Problem"][0]["Upper bound"] != 0 or solveinfo["Problem"][0]["Lower bound"] != 0:
         
         gap = (solveinfo["Problem"][0]["Upper bound"]/solveinfo["Problem"][0]["Lower bound"])-1 if solveinfo["Problem"][0]["Lower bound"] != 0 else 1
+        gap = gap.__round__(3)
         
         if gap > 0.01: # Discard if gap > 1%
-            print(f"{n}/{N}\t\tDISCARDED\t\tGap: {gap.__round__(4)*100}%\tRuntime: {round(time.time()-start, 3)}s\t\t{solveinfo['Problem'][0]['Lower bound']} - {solveinfo['Problem'][0]['Upper bound']}")
+            print(f"{n}/{N}\tDISCARDED\t\t\t\tGap: {gap.__round__(4)*100}%\tRuntime: {round(time.time()-start, 3)}s\t\t{solveinfo['Problem'][0]['Lower bound']} - {solveinfo['Problem'][0]['Upper bound']}")
             continue
     
     else:
@@ -462,7 +469,7 @@ for n in range(N):
             model.demand_sold["d2", t].value,   # (19, ['delta', 'p2'])
         ])
         
-    print(f"{n}/{N}\tOptimal value: {model.obj().__round__(5)}\t\tExit code: {solveinfo['Solver'][0]['Status']}\t\tGap: {gap.__round__(4)*100}%\tRuntime: {round(time.time()-start, 3)}s")
+    print(f"{n}/{N}\tOptimal value: {model.obj().__round__(3)}\t\tExit code: {solveinfo['Solver'][0]['Status']}\t\tGap: {gap.__round__(4)*100}%\tRuntime: {round(time.time()-start, 3)}s")
 
 df_obs = pd.DataFrame(dataobs, columns=cols_obs)
 df_act = pd.DataFrame(dataact, columns=cols_act)

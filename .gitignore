@@ -1,4 +1,8 @@
 /blendv/
-/models/*
+/models/
+/dl2/
+/decision-transformer/
+/semantic_loss/
 __pycache__/
 /.vscode/
+*.pyc
