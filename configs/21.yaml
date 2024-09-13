@@ -1,0 +1,32 @@
+clipped_std: true
+custom_softmax: false
+env:
+  B: 5
+  D: 1
+  M: 10
+  P: 5
+  Q: 0
+  Z: 100
+  alpha: 0.1
+  beta: 1
+  maxflow: 500
+  product_cost: 0
+  reg: 0
+  reg_lambda: 1
+  uniform_data: false
+id: 21
+model:
+  act_fn: ReLU
+  arch_layersize: 128
+  arch_n: 4
+  batch_size: 64
+  clip_range: 0.1
+  ent_coef: 0.0001
+  log_std_init: -2
+  lr: 0.01
+  use_sde: false
+obs_normalizer: false
+optimizer: PPO
+policytype: MLP
+reward_normalizer: true
+starting_point: null

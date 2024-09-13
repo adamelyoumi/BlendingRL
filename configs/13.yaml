@@ -13,11 +13,13 @@ env:
   product_cost: 0
   reg: 0
   reg_lambda: 1
+  uniform_data: false
 id: 13
 model:
   act_fn: ReLU
   arch_layersize: 128
   arch_n: 6
+  batch_size: 64
   clip_range: 0.1
   ent_coef: 0.0001
   log_std_init: -2

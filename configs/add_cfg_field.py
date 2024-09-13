@@ -5,8 +5,8 @@ import yaml
 
 
 attrib_name_1 = 'model'
-attrib_name_2 = 'use_sde'
-default_value = False
+attrib_name_2 = 'batch_size'
+default_value = 64
 
 folder_path = './configs'
 
