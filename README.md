@@ -12,7 +12,7 @@ A critical constraint is that no blending tank can have both incoming and outgoi
 
 We use pytorch, stable_baselines3 and Tensorboard for visualization.
 
-Please check out the PDF file for the MDP definition, `envs.py` for the environment definition, `models.py` for custom policy and model definitions, and the `RL_scripts/RL_train_simplest.ipynb` notebook for the most recent training process.
+Please check out the PDF file for the MDP definition, `envs.py` for the environment definition, `models.py` for custom policy and model definitions, and the `RL_scripts/RL_train.ipynb` notebook for the most recent training process.
 
 Training logs can be viewed by opening tensorboard on the `logs` directory. Configuration descriptions can be found in the `configs` directory or in [this Google Sheet](https://docs.google.com/spreadsheets/d/1qYxyulHMTBfmBNzkTz9xo487xnKjwOy5LTgq75R-mkQ/edit?usp=sharing)
 

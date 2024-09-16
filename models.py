@@ -372,7 +372,7 @@ class IL_RNN_simple(nn.Module):
         self.linear = nn.Sequential(*layers)
     
     def forward(self, x: th.Tensor):
-        print(x.shape)
+        # print(x.shape)
         batch_size = x.size(0)
         x = x.unsqueeze(0)
         x = x.reshape(batch_size, self.IN_DIM, -1)

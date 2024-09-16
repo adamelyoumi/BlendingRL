@@ -125,7 +125,7 @@ class BlendEnv(gym.Env):
         self.MAXFLOW = 50
         self.determ = True
         
-        with open("./configs/json/connections.json" ,"r") as f:
+        with open("./configs/json/connections_base.json" ,"r") as f:
             connections_s = f.readline()
         self.connections = json.loads(connections_s)
         
@@ -151,7 +151,7 @@ class BlendEnv(gym.Env):
         
         self.forecast_window_len = 6
         
-        with open("./configs/json/action_sample.json" ,"r") as f:
+        with open("./configs/json/action_sample_base.json" ,"r") as f:
             action = f.readline()
         self.action_sample = json.loads(action)
         
