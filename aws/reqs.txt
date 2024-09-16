@@ -1,0 +1,8 @@
+Pyomo==6.7.1
+torch==2.2.1
+pandas==2.0.3
+numpy==1.24.4
+stable_baselines3==2.3.2
+gymnasium==0.28.1
+pyyaml
+tensorboard
