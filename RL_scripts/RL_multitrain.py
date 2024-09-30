@@ -52,11 +52,11 @@ CONFIGS = eval(args.configs)
 N_TRIES = int(args.n_tries)
 N_TIMESTEPS = int(args.n_timesteps)
 
-with open(f"../configs/json/connections_{args.layout}.json" ,"r") as f:
+with open(f"./configs/json/connections_{args.layout}.json" ,"r") as f:
     connections_s = f.readline()
 connections = json.loads(connections_s)
 
-with open(f"../configs/json/action_sample_{args.layout}.json" ,"r") as f:
+with open(f"./configs/json/action_sample_{args.layout}.json" ,"r") as f:
     action_sample_s = f.readline()
 action_sample = json.loads(action_sample_s)
 action_sample_flat, mapp = flatten_and_track_mappings(action_sample)

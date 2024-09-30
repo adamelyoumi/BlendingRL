@@ -9,11 +9,13 @@ import numpy as np
 
 M, Q, P, B, Z, D = 0, 0, 0, 0, 1, 0
 
-with open("C:/Users/adame/OneDrive/Bureau/CODE/BlendingRL/configs/json/connections_simple.json" ,"r") as f:
+envtype = "simple"
+
+with open(f"C:/Users/adame/OneDrive/Bureau/CODE/BlendingRL/configs/json/connections_{envtype}.json" ,"r") as f:
     connections_s = f.readline()
 connections = json.loads(connections_s)
 
-with open("C:/Users/adame/OneDrive/Bureau/CODE/BlendingRL/configs/json/action_sample_simple.json" ,"r") as f:
+with open(f"C:/Users/adame/OneDrive/Bureau/CODE/BlendingRL/configs/json/action_sample_{envtype}.json" ,"r") as f:
     action = f.readline()
 action_sample = json.loads(action)
 
@@ -24,24 +26,17 @@ def read_csv(file_path):
         return [row for row in reader]
 
 def construct_episodes(observation_data, action_data):
-    # cnt = 0
-    # for p in (observation_data):
-    #     print(cnt, p)
-    #     cnt+=1
     episodes = []
     current_episode = {'observations': [], 
                        'next_observations': [], 
                        'actions': [], 
                        'rewards': [], 
-                       'terminals': []}
+                       'dones': []}
     tau0   = {"s1": [], "s2": []}
     delta0 = {"p1": [], "p2": []}
     first_episode = True
 
     for obs, act in zip(observation_data, action_data):
-        # print(obs)
-        # print(np.array([float(i) for i in obs[1:]]))
-        # obs, act = np.array([float(i) for i in obs[1:]]), np.array([float(i) for i in act[1:]])
         timestep = int(obs[-1])
         
         # If new episode start detected
@@ -49,35 +44,59 @@ def construct_episodes(observation_data, action_data):
             
             # Computing rewards
             T = len(tau0["s1"])
-            env = BlendEnv(M=M, Q=Q, P=P, B=B, Z=Z, D=D, tau0 = tau0, delta0 = delta0, T = T, connections = connections, action_sample = action_sample)
+            env = BlendEnv(M=M, Q=Q, P=P, B=B, Z=Z, D=D, tau0 = tau0, delta0 = delta0, T = T, 
+                           connections = connections, action_sample = action_sample)
             obs_, _ = env.reset()
             prev_reward = 0
             for t in range(T):
                 action = th.Tensor( [float(i) for i in current_episode["actions"][t]] )
                 obs_, reward, done_, term_, _ = env.step(action)
                 current_episode["rewards"].append(reward-prev_reward)
+                current_episode["dones"].append(done_)
                 prev_reward = reward
-            # print([ob for ob in current_episode["observations"]])
+            
+            rtg = []
+            for k in range(len(current_episode["rewards"])):
+                rtg.append(sum(current_episode["rewards"][k:]))
+            
+            current_episode["rewards"] = rtg
+            # Removing last obs and putting initial step at the beginning
+            init_obs = [0] * 12
+            for k in range(6):
+                if k>T:
+                    init_obs += [0]*4
+                else:
+                    init_obs += [tau0["s1"][k], tau0["s2"][k], delta0["p1"][k], delta0["p2"][k]]
+                
+            init_obs += [0] # Timestep
+            
+            # Shifting timesteps & forecasts of subsequent observations by 1
+            for t in range(len(current_episode["observations"])-1):
+                for k in range(12, len(current_episode["observations"][t])):
+                    current_episode["observations"][t][k] = current_episode["observations"][t+1][k]
+            
+            current_episode["observations"] = [np.array(init_obs)] + current_episode["observations"][:-1]
+            
+            # print([k.shape for k in current_episode["observations"]] )
+            
+            # Converting to arrays
             current_episode["observations"] = np.array(current_episode["observations"])
             current_episode["actions"] = np.array(current_episode["actions"])
             current_episode["rewards"] = np.array(current_episode["rewards"])
+            current_episode["dones"] = np.array(current_episode["dones"])
             
             # Adding ep to ep list
             episodes.append(current_episode)
             current_episode = {'observations': [],
                        'actions': [],
                        'rewards': [],
-                       'terminals': []}
+                       'dones': []}
             tau0   = {"s1": [], "s2": []}
             delta0 = {"p1": [], "p2": []}
 
         # Append data
-        # print(np.array([float(i) for i in obs[1:]]).shape, obs[1:], np.array([float(i) for i in obs[1:]]))
         current_episode["observations"].append( np.array([float(i) for i in obs[1:]]) )
         current_episode["actions"].append( np.array([float(i) for i in act[1:]]) )
-        current_episode["terminals"].append( False )
-        
-        # print(current_episode["observations"][-1].shape, current_episode["observations"][-1])
         
         tau0["s1"].append(float(obs[13]))
         tau0["s2"].append(float(obs[14]))
@@ -94,13 +113,15 @@ def construct_episodes(observation_data, action_data):
     prev_reward = 0
     for t in range(T):
         action = th.Tensor( [float(i) for i in current_episode["actions"][t]] )
-        obs, reward, done, term, _ = env.step(action)
+        obs_, reward, done_, term, _ = env.step(action)
         current_episode["rewards"].append(reward-prev_reward)
+        current_episode["dones"].append(done_)
         prev_reward = reward
     
     current_episode["observations"] = np.array(current_episode["observations"])
     current_episode["actions"] = np.array(current_episode["actions"])
     current_episode["rewards"] = np.array(current_episode["rewards"])
+    current_episode["dones"] = np.array(current_episode["dones"])
     
     # Adding ep to ep list
     episodes.append(current_episode)
@@ -125,12 +146,6 @@ for file in os.listdir("./data/simple/"):
         print(len(trajs_))
         trajectories += trajs_
 
-# Print the episodes to verify
-# print(len(trajectories))
-# for trajectory in trajectories:
-#     print("New Episode")
-#     for key in trajectory:
-#         print(key, trajectory[key])
 
-with open("./decision-transformer/gym/data/blend-small-v2.pkl", "wb") as f:
+with open("./decision-transformer/gym/data/blend-medium-v4.pkl", "wb") as f:
     pickle.dump(trajectories, f)

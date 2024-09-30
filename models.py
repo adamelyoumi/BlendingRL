@@ -349,7 +349,7 @@ class IL_MLP_simple(nn.Module):
         return x
 
 class IL_RNN_simple(nn.Module):
-    def __init__(self, dims = [128,128], act_cls = nn.ReLU, num_layers = 2, hidden_size = 64):
+    def __init__(self, dims = [128,128], act_cls = nn.ReLU, num_layers = 2, hidden_size = 64, in_dim = 37, out_dim = 20):
         super().__init__()
 
         self.num_layers = num_layers
@@ -357,8 +357,7 @@ class IL_RNN_simple(nn.Module):
 
         self.lstm = nn.LSTM(input_size=1, hidden_size=self.hidden_size, num_layers=self.num_layers, batch_first=True)
         
-        
-        self.IN_DIM, self.OUT_DIM = 37, 20
+        self.IN_DIM, self.OUT_DIM = in_dim, out_dim
         
         layers = []
         dims = [self.hidden_size] + dims + [self.OUT_DIM]
@@ -384,13 +383,3 @@ class IL_RNN_simple(nn.Module):
 
         out = self.linear(lstm_out[:, -1, :])
         return out
-
-
-
-if __name__ == "__main__":
-    # model = PPO(CustomMLP_ACP_simplest, "CartPole-v1", verbose=1)
-    
-    from envs import simplestenv
-    model = PPO(CustomMLP_ACP_simplest_std, simplestenv, verbose=1)
-    model.learn(200000)
-

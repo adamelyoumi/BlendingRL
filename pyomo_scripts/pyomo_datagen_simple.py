@@ -166,10 +166,10 @@ for n in range(N):
         s_amounts, d_amounts, b_inv_ub, total_product, T = gen_data_3()
         timestamps = list(range(T))
 
-    # print("total_product:", total_product, "\ns_amounts:", s_amounts, "\nd_amounts:", 
-    #       d_amounts, "\nb_inv_lb:", b_inv_lb, "\nb_inv_ub:", b_inv_ub, "\n\n")
+    print("total_product:", total_product, "\ns_amounts:", s_amounts, "\nd_amounts:", 
+          d_amounts, "\nb_inv_lb:", b_inv_lb, "\nb_inv_ub:", b_inv_ub, "\n\n")
     
-    # continue
+    continue
 
     # Model
     model = ConcreteModel()
