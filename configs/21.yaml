@@ -9,6 +9,8 @@ env:
   Z: 100
   alpha: 0.1
   beta: 1
+  illegal_flow_hndl: prop
+  max_pen_violations: 999
   maxflow: 500
   product_cost: 0
   reg: 0
@@ -24,6 +26,8 @@ model:
   ent_coef: 0.0001
   log_std_init: -2
   lr: 0.01
+  lr_end: 0
+  lr_sched: false
   use_sde: false
 obs_normalizer: false
 optimizer: PPO

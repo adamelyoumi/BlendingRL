@@ -1,5 +1,5 @@
 cd "C:\Users\adame\OneDrive\Bureau\CODE\BlendingRL\aws"
-Set-Variable remoteIP "ubuntu@ec2-3-239-95-139.compute-1.amazonaws.com"
+Set-Variable remoteIP "ubuntu@ec2-3-236-68-147.compute-1.amazonaws.com"
 
 ssh -i ".\bp2.pem" $remoteIP -t "
     cd /opt;
@@ -27,7 +27,7 @@ scp -i ".\bp2.pem" "../configs/json/action_sample_base.json" "../configs/json/ac
 
 $filesToCopy = @()
 
-for ($k = 20; $k -lt 30; $k++) {
+for ($k = 20; $k -lt 99; $k++) {
     $filePath = "../configs/$k.yaml"
     if (Test-Path $filePath) {
         $filesToCopy += $filePath
@@ -55,7 +55,7 @@ ssh -i "./bp2.pem" ${remoteIP} -t "
 
 # ssh -i ".\bp2.pem" -NL 8008:localhost:8008 $remoteIP
 # tensorboard --logdir . --port 8008
-# python RL_scripts/RL_multitrain.py --configs '[23, 25, 27, 28]' --n_tries 4 --n_timesteps 150000 --layout simplest > out;
+# python RL_scripts/RL_multitrain.py --configs '[23, 29, 31]' --n_tries 4 --n_timesteps 150000 --layout simplest;
 # python ./decision-transformer/gym/experiment.py --env blend --dataset medium --dataset_version v4 --env_type simple
 
 ### TODO remove bernoulli for demands

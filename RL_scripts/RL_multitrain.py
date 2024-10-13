@@ -1,3 +1,4 @@
+# TB regex: (30/)|(33/)|(23/)|(32/)|(31/)|(29/)
 
 import sys, os
 
@@ -48,7 +49,7 @@ parser.add_argument("--layout", default="simplest")
 args = parser.parse_args()
 
 
-CONFIGS = eval(args.configs)
+CONFIGS = eval(args.configs) # list of int
 N_TRIES = int(args.n_tries)
 N_TIMESTEPS = int(args.n_timesteps)
 
@@ -91,7 +92,6 @@ for train_id in CONFIGS:
             class CustomLoggingCallbackPPO(BaseCallback):
                 def __init__(self, schedule_timesteps, start_log_std=2, end_log_std=-1, std_control = cfg["clipped_std"]):
                     super().__init__(verbose = 0)
-                    self.print_flag = False
                     self.std_control = std_control
                     
                     self.start_log_std = start_log_std
@@ -99,64 +99,69 @@ for train_id in CONFIGS:
                     self.schedule_timesteps = schedule_timesteps
                     self.current_step = 0
                     
-                    self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [[]]*4
+                    self.pen_M, self.pen_B, self.pen_P, self.pen_reg, self.pen_nv = [], [], [], [], []
+                    self.n_pen_M, self.n_pen_B, self.n_pen_P = [], [], []
                     
                 def _on_rollout_end(self) -> None:
-                    self.logger.record("penalties/in_out", sum(self.pen_M)/len(self.pen_M))
-                    self.logger.record("penalties/buysell_bounds", sum(self.pen_B)/len(self.pen_B))
-                    self.logger.record("penalties/tank_bounds", sum(self.pen_P)/len(self.pen_P))
+                    self.logger.record("penalties/in_out",              sum(self.pen_M)/len(self.pen_M))
+                    self.logger.record("penalties/buysell_bounds",      sum(self.pen_B)/len(self.pen_B))
+                    self.logger.record("penalties/tank_bounds",         sum(self.pen_P)/len(self.pen_P))
+                    self.logger.record("penalties/n_in_out",            sum(self.n_pen_M)/len(self.n_pen_M))
+                    self.logger.record("penalties/n_buysell_bounds",    sum(self.n_pen_B)/len(self.n_pen_B))
+                    self.logger.record("penalties/n_tank_bounds",       sum(self.n_pen_P)/len(self.n_pen_P))
+                    self.logger.record("penalties/n_vltn",              sum(self.pen_nv)/len(self.pen_nv))
                     
-                    self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
+                    self.pen_M, self.pen_B, self.pen_P, self.pen_reg, self.pen_nv = [], [], [], [], []
+                    self.n_pen_M, self.n_pen_B, self.n_pen_P = [], [], []
                     
                 def _on_step(self) -> bool:
                     log_std: th.Tensor = self.model.policy.log_std
                     t = self.locals["infos"][0]['dict_state']['t']
                     
-                    if self.locals["dones"][0]: # record info at each episode end
+                    if self.locals["infos"][0]["terminated"] or self.locals["infos"][0]["truncated"]: # record info at each episode end
                         self.pen_M.append(self.locals["infos"][0]["pen_tracker"]["M"])
                         self.pen_B.append(self.locals["infos"][0]["pen_tracker"]["B"])
                         self.pen_P.append(self.locals["infos"][0]["pen_tracker"]["P"])
+                        self.n_pen_M.append(-self.locals["infos"][0]["pen_tracker"]["M"]/cfg["env"]["M"])
+                        self.n_pen_B.append(-self.locals["infos"][0]["pen_tracker"]["B"]/cfg["env"]["P"])
+                        self.n_pen_P.append(-self.locals["infos"][0]["pen_tracker"]["P"]/cfg["env"]["B"])
+                        self.pen_nv.append(self.locals["infos"][0]["pen_tracker"]["n_violations"])
                     
-                    if self.num_timesteps%2048 < 6 and t == 1: # start printing
-                        self.print_flag = True
-                        
-                    if self.print_flag:
-                        print("\nt:", t)
-                        if np.isnan(self.locals['rewards'][0]) or np.isinf(self.locals['rewards'][0]):
-                            print(f"is invalid reward {self.locals['rewards'][0]}")
-                        for i in ['obs_tensor', 'actions', 'values', 'clipped_actions', 'new_obs', 'rewards']:
-                            if i in self.locals:
-                                print(f"{i}: " + str(self.locals[i]))
-                        if t == 6:
-                            self.print_flag = False
-                            print(f"\n\nLog-Std at step {self.num_timesteps}: {log_std.detach().numpy()}")
-                            print("\n\n\n\n\n")
                             
                     if self.std_control:
                         progress = self.current_step / self.schedule_timesteps
                         new_log_std = self.start_log_std + progress * (self.end_log_std - self.start_log_std)
                         self.model.policy.log_std.data.fill_(new_log_std)
                         self.current_step += 1
-                            
+                    
                     return True
 
             betaT_s = {s: cfg["env"]["product_cost"]  for s in sources} # Cost of bought products
+            
+            T = 6
             if cfg["env"]["uniform_data"]:
-                tau0   = {s: [np.random.binomial(1, 0.7) * np.random.normal(15, 2) for _ in range(13)] for s in sources}
-                delta0 = {d: [np.random.binomial(1, 0.7) * np.random.normal(15, 2) for _ in range(13)] for d in demands}
+                if cfg["env"]["max_pen_violations"] < 999:
+                    max_ep_length = 50
+                    tau0   = {s: [np.random.normal(20, 3) for _ in range(max_ep_length)] for s in sources}
+                    delta0 = {d: [np.random.normal(20, 3) for _ in range(max_ep_length)] for d in demands}
+                    T = max_ep_length
+                    
+                else:
+                    tau0   = {s: [np.random.normal(20, 3) for _ in range(13)] for s in sources}
+                    delta0 = {d: [np.random.normal(20, 3) for _ in range(13)] for d in demands}
             else:
                 tau0   = {s: [10, 10, 10, 0, 0, 0] for s in sources}
                 delta0 = {d: [0, 0, 0, 10, 10, 10] for d in demands}
 
-            env = BlendEnv(v = False, 
+            env = BlendEnv(v = False, T = T,
                     D = cfg["env"]["D"], Q = cfg["env"]["Q"], 
                     P = cfg["env"]["P"], B = cfg["env"]["B"], 
                     Z = cfg["env"]["Z"], M = cfg["env"]["M"],
                     reg = cfg["env"]["reg"],
                     reg_lambda = cfg["env"]["reg_lambda"],
                     MAXFLOW = cfg["env"]["maxflow"],
-                    alpha = cfg["env"]["alpha"],
-                    beta = cfg["env"]["beta"],
+                    alpha = cfg["env"]["alpha"], beta = cfg["env"]["beta"], 
+                    max_pen_violations = cfg["env"]["max_pen_violations"],
                     connections = connections,
                     action_sample = action_sample,
                     tau0 = tau0,delta0 = delta0,
@@ -237,38 +242,6 @@ for train_id in CONFIGS:
                         reset_num_timesteps = False)
 
             model.save(model_name)
-
-            M,Q,P,B,Z,D = 0, 0, 0, 0, 1, 0
-            env = BlendEnv(v = True, 
-                        D = cfg["env"]["D"], Q = cfg["env"]["Q"], 
-                        P = cfg["env"]["P"], B = cfg["env"]["B"], 
-                        Z = cfg["env"]["Z"], M = cfg["env"]["M"],
-                        reg = cfg["env"]["reg"],
-                        reg_lambda = cfg["env"]["reg_lambda"],
-                        MAXFLOW = cfg["env"]["maxflow"],
-                        alpha = cfg["env"]["alpha"],
-                        beta = cfg["env"]["beta"],
-                        connections = connections,
-                        action_sample = action_sample,
-                        tau0 = tau0,delta0 = delta0,
-                        sigma = sigma,
-                        sigma_ub = sigma_ub, sigma_lb = sigma_lb,
-                        s_inv_lb = s_inv_lb, s_inv_ub = s_inv_ub,
-                        d_inv_lb = d_inv_lb, d_inv_ub = d_inv_ub,
-                        betaT_d = betaT_d, betaT_s = betaT_s,
-                        b_inv_ub = b_inv_ub,
-                        b_inv_lb = b_inv_lb)
-            env = Monitor(env)
-
-            obs = env.reset()
-            obs, obs_dict = obs
-            for k in range(env.T):
-                action, _ = model.predict(obs, deterministic=True)
-                print("\n\n   ",reconstruct_dict(action, env.mapping_act))
-                obs, reward, done, term, _ = env.step(action)
-                dobs = reconstruct_dict(obs, env.mapping_obs)
-                print("\n    >>     ",dobs["sources"], dobs["blenders"], dobs["demands"])
-                print("   " ,reward)
                     
         except Exception as e:
             print(e)

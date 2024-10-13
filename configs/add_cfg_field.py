@@ -1,12 +1,15 @@
 # https://docs.google.com/spreadsheets/d/1qYxyulHMTBfmBNzkTz9xo487xnKjwOy5LTgq75R-mkQ/edit?gid=0#gid=0
 
+# Script to automatically add or remove a field in the config files
+# Will set attrib_name_1.attrib_name_2 = default_value
+
 import os
 import yaml
 
 
-attrib_name_1 = 'model'
-attrib_name_2 = 'batch_size'
-default_value = 64
+attrib_name_1 = 'env'
+attrib_name_2 = 'illegal_flow_hndl'
+default_value = 'prop'
 
 folder_path = './configs'
 

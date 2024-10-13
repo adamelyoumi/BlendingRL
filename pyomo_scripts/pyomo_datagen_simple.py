@@ -169,7 +169,7 @@ for n in range(N):
     print("total_product:", total_product, "\ns_amounts:", s_amounts, "\nd_amounts:", 
           d_amounts, "\nb_inv_lb:", b_inv_lb, "\nb_inv_ub:", b_inv_ub, "\n\n")
     
-    continue
+    
 
     # Model
     model = ConcreteModel()
