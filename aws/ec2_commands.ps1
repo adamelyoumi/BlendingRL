@@ -1,5 +1,5 @@
 cd "C:\Users\adame\OneDrive\Bureau\CODE\BlendingRL\aws"
-Set-Variable remoteIP "ubuntu@ec2-3-236-68-147.compute-1.amazonaws.com"
+Set-Variable remoteIP "ubuntu@ec2-3-215-79-179.compute-1.amazonaws.com"
 
 ssh -i ".\bp2.pem" $remoteIP -t "
     cd /opt;
@@ -50,12 +50,12 @@ ssh -i "./bp2.pem" ${remoteIP} -t "
     cd bp;
     pip install -r ./reqs.txt;
     mkdir data data/simple models models/imitation models/simplest;
-    python ./decision-transformer/gym/experiment.py --env blend --dataset medium --dataset_version v4 --env_type simple
+    python RL_scripts/RL_multitrain.py --configs '[35, 36, 37, 38, 39, 40]' --n_tries 3 --n_timesteps 100000 --layout simplest;
 "
 
 # ssh -i ".\bp2.pem" -NL 8008:localhost:8008 $remoteIP
 # tensorboard --logdir . --port 8008
-# python RL_scripts/RL_multitrain.py --configs '[23, 29, 31]' --n_tries 4 --n_timesteps 150000 --layout simplest;
+# python RL_scripts/RL_multitrain.py --configs '[35, 36, 37, 38, 39, 40]' --n_tries 3 --n_timesteps 100000 --layout simplest;
 # python ./decision-transformer/gym/experiment.py --env blend --dataset medium --dataset_version v4 --env_type simple
 
 ### TODO remove bernoulli for demands

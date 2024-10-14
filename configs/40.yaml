@@ -3,20 +3,20 @@ custom_softmax: false
 env:
   B: 50
   D: 1
-  M: 50
+  M: 1000
   P: 50
   Q: 0
   Z: 10
   alpha: 1
   beta: 1
-  illegal_act_hndl: disable
+  illeg_act_handling: disable
   max_pen_violations: 999
   maxflow: 500
   product_cost: 1
   reg: 0
   reg_lambda: 1
   uniform_data: true
-id: 39
+id: 40
 model:
   act_fn: ReLU
   arch_layersize: 128

@@ -8,7 +8,7 @@ import yaml
 
 
 attrib_name_1 = 'env'
-attrib_name_2 = 'illegal_flow_hndl'
+attrib_name_2 = 'illeg_act_handling'
 default_value = 'prop'
 
 folder_path = './configs'

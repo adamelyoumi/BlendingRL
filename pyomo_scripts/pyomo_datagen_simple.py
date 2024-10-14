@@ -6,6 +6,7 @@ import math as m
 import argparse
 
 from pyomo.environ import *
+from utils import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument('N')

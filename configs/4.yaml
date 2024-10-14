@@ -9,7 +9,7 @@ env:
   Z: 100
   alpha: 0.1
   beta: 0
-  illegal_flow_hndl: prop
+  illeg_act_handling: prop
   max_pen_violations: 999
   maxflow: 50
   product_cost: 0

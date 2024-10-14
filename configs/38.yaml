@@ -3,13 +3,13 @@ custom_softmax: false
 env:
   B: 50
   D: 1
-  M: 50
+  M: 1000
   P: 50
   Q: 0
   Z: 10
   alpha: 0
   beta: 0
-  illegal_flow_hndl: prop
+  illeg_act_handling: prop
   max_pen_violations: 999
   maxflow: 500
   product_cost: 0
