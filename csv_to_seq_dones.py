@@ -8,7 +8,6 @@ import torch as th
 import numpy as np
 
 M, Q, P, B, Z, D = 0, 0, 0, 0, 1, 0
-
 envtype = "simple"
 
 with open(f"C:/Users/adame/OneDrive/Bureau/CODE/BlendingRL/configs/json/connections_{envtype}.json" ,"r") as f:
@@ -26,6 +25,7 @@ def read_csv(file_path):
         return [row for row in reader]
 
 def construct_episodes(observation_data, action_data):
+    final_rews = []
     episodes = []
     current_episode = {'observations': [], 
                        'next_observations': [], 
@@ -84,6 +84,8 @@ def construct_episodes(observation_data, action_data):
             current_episode["actions"] = np.array(current_episode["actions"])
             current_episode["rewards"] = np.array(current_episode["rewards"])
             current_episode["dones"] = np.array(current_episode["dones"])
+
+            final_rews.append(current_episode["rewards"][-1])
             
             # Adding ep to ep list
             episodes.append(current_episode)
@@ -125,6 +127,13 @@ def construct_episodes(observation_data, action_data):
     
     # Adding ep to ep list
     episodes.append(current_episode)
+    print( len(final_rews))
+    try:
+        final_rews.append(current_episode["rewards"][-1])
+        print("avg rewards:", sum(final_rews) / len(final_rews))
+    except:
+        pass
+    
 
     return episodes
 

@@ -19,3 +19,13 @@ def get_sbp(connections):
     
     return sources, blenders, demands
 
+def get_jsons(layout):
+    import json
+    with open(f"./configs/json/connections_{layout}.json" ,"r") as f:
+        connections_s = f.readline()
+    connections = json.loads(connections_s)
+
+    with open(f"./configs/json/action_sample_{layout}.json" ,"r") as f:
+        action_sample_s = f.readline()
+    action_sample = json.loads(action_sample_s)
+    return connections, action_sample
