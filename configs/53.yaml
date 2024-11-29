@@ -9,6 +9,7 @@ env:
   Z: 10
   alpha: 0
   beta: 0
+  challenging_concentrations: false
   illeg_act_handling: disable
   max_pen_violations: 999
   maxflow: 500
@@ -16,7 +17,7 @@ env:
   reg: 0
   reg_lambda: 1
   uniform_data: true
-id: 46
+id: 53
 model:
   act_fn: ReLU
   arch_layersize: 128
@@ -33,4 +34,4 @@ obs_normalizer: false
 optimizer: PPO
 policytype: MLP
 reward_normalizer: true
-starting_point: 45
+starting_point: 52

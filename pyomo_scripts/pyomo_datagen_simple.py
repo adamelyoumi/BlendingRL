@@ -412,7 +412,7 @@ for n in range(N):
             model.blend_inv["j2", t].value,                 #  (3, ['blenders', 'j2']),
             model.blend_inv["j3", t].value,                 #  (4, ['blenders', 'j3']),
             model.blend_inv["j4", t].value,                 #  (5, ['blenders', 'j4']),
-            model.demand_inv_after_sell["p1", t].value,     #  (6, ['demands', 'q1']),
+            model.demand_inv_after_sell["p1", t].value,     #  (6, ['demands', 'p1']),
             model.demand_inv_after_sell["p2", t].value,     #  (7, ['demands', 'p2']),
             model.prop_blend_inv["q1", "j1", t].value,      #  (8, ['properties', 'j1', 'q1']),
             model.prop_blend_inv["q1", "j2", t].value,      #  (9, ['properties', 'j2', 'q1']),
@@ -421,12 +421,12 @@ for n in range(N):
             
             s_amounts["s1"][0+t] if 0+t < T else 0,  #  (12, ['sources_avail_next_0', 's1']),
             s_amounts["s2"][0+t] if 0+t < T else 0,  #  (13, ['sources_avail_next_0', 's2']),
-            d_amounts["p1"][0+t] if 0+t < T else 0,  #  (14, ['demands_avail_next_0', 'q1']),
+            d_amounts["p1"][0+t] if 0+t < T else 0,  #  (14, ['demands_avail_next_0', 'p1']),
             d_amounts["p2"][0+t] if 0+t < T else 0,  #  (15, ['demands_avail_next_0', 'p2']),
             
             s_amounts["s1"][1+t] if 1+t < T else 0,  #  (16, ['sources_avail_next_1', 's1']),
             s_amounts["s2"][1+t] if 1+t < T else 0,  #  (17, ['sources_avail_next_1', 's2']),
-            d_amounts["p1"][1+t] if 1+t < T else 0,  #  (18, ['demands_avail_next_1', 'q1']),
+            d_amounts["p1"][1+t] if 1+t < T else 0,  #  (18, ['demands_avail_next_1', 'p1']),
             d_amounts["p2"][1+t] if 1+t < T else 0,  #  (19, ['demands_avail_next_1', 'p2']),
             
             s_amounts["s1"][2+t] if 2+t < T else 0,  #  (20, ['sources_avail_next_2', 's1']),
@@ -472,7 +472,7 @@ for n in range(N):
             
             model.offer_bought["s1", t].value,  # (16, ['tau', 's1']),
             model.offer_bought["s2", t].value,  # (17, ['tau', 's2']),
-            model.demand_sold["p1", t].value,   # (18, ['delta', 'q1']),
+            model.demand_sold["p1", t].value,   # (18, ['delta', 'p1']),
             model.demand_sold["p2", t].value,   # (19, ['delta', 'p2'])
         ])
         

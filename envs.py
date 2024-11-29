@@ -586,7 +586,7 @@ class BlendEnv(gym.Env):
     def penalty_quality(self, p, q, j, action):
         if (self.state["properties"][j][q] < self.sigma_lb[p][q] or self.state["properties"][j][q] > self.sigma_ub[p][q]) \
                 and (p in action["blend_demand"][j].keys() and action["blend_demand"][j][p] > 0):
-            self.logg(f"[PEN] t{self.t}; {p}; {q}; {j}:\t\t\tSold qualities out of bounds ({round(self.state['properties'][j][q], 2)})")
+            self.logg(f"[PEN] t{self.t}; {p}; {q}; {j}:\t\t\tSold qualities out of bounds ({self.state['properties'][j][q]})")
             self.pen_tracker["n_Q"] += 1
             self.pen_tracker["Q"] -= self.Q
             return self.Q

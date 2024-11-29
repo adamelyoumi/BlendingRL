@@ -1,16 +1,17 @@
 cd "C:\Users\adame\OneDrive\Bureau\CODE\BlendingRL\aws"
-Set-Variable remoteIP "ubuntu@ec2-3-85-218-131.compute-1.amazonaws.com"
+Set-Variable remoteIP "ubuntu@ec2-44-223-37-152.compute-1.amazonaws.com"
 
-ssh -i ".\bp2.pem" $remoteIP -t "
+ssh -i ".\bp2.pem" $remoteIP -t "    
+    export GRB_LICENSE_FILE=/home/ubuntu/bp/gurobi/gurobi.lic;
+    export GUROBI_HOME=/opt/gurobi1103/linux64;
+    export PATH=${PATH}:${GUROBI_HOME}/bin;
+    export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${GUROBI_HOME}/lib;
+    
     cd /opt;
     sudo wget https://packages.gurobi.com/11.0/gurobi11.0.3_linux64.tar.gz;
     sudo tar xvfz gurobi11.0.3_linux64.tar.gz;
     sudo rm gurobi11.0.3_linux64.tar.gz;
     sudo touch gurobi/gurobi.lic;
-    export GRB_LICENSE_FILE=/home/ubuntu/bp/gurobi/gurobi.lic;
-    export GUROBI_HOME=/opt/gurobi1103/linux64;
-    export PATH=${PATH}:${GUROBI_HOME}/bin;
-    export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${GUROBI_HOME}/lib;
     cd /home/ubuntu/;
     mkdir bp;
     cd bp;
@@ -21,14 +22,14 @@ ssh -i ".\bp2.pem" $remoteIP -t "
 "
 
 scp -i ".\bp2.pem" "./gurobi.lic" "${remoteIP}:/home/ubuntu/bp/gurobi/"
-scp -i ".\bp2.pem" "./reqs.txt" "../envs.py" "../models.py" "${remoteIP}:/home/ubuntu/bp/"
-scp -i ".\bp2.pem" "../pyomo_scripts/pyomo_datagen_simple.py" "../pyomo_scripts/pyomo_datagen.py" "${remoteIP}:/home/ubuntu/bp/pyomo_scripts/"
+scp -i ".\bp2.pem" "./reqs.txt" "../envs.py" "../models.py" "../utils.py" "${remoteIP}:/home/ubuntu/bp/"
+scp -i ".\bp2.pem" "../pyomo_scripts/pyomo_datagen_simple.py" "../pyomo_scripts/pyomo_datagen.py" "../pyomo_scripts/solver_function.py" "${remoteIP}:/home/ubuntu/bp/pyomo_scripts/"
 scp -i ".\bp2.pem" "../RL_scripts/RL_multitrain.py" "${remoteIP}:/home/ubuntu/bp/RL_scripts/"
 scp -i ".\bp2.pem" "../configs/json/action_sample_base.json" "../configs/json/action_sample_simple.json" "../configs/json/action_sample_simplest.json" "../configs/json/connections_base.json" "../configs/json/connections_simple.json" "../configs/json/connections_simplest.json" "${remoteIP}:/home/ubuntu/bp/configs/json"
 
 $filesToCopy = @()
 
-for ($k = 20; $k -lt 99; $k++) {
+for ($k = 40; $k -lt 99; $k++) {
     $filePath = "../configs/$k.yaml"
     if (Test-Path $filePath) {
         $filesToCopy += $filePath
@@ -56,5 +57,5 @@ ssh -i "./bp2.pem" ${remoteIP} -t "
 
 # ssh -i ".\bp2.pem" -NL 8008:localhost:8008 $remoteIP
 # tensorboard --logdir ./logs/simple --port 8008
-# python RL_scripts/RL_multitrain.py --configs '[41, 42, 43, 44, 45, 46, 47]' --n_tries 3 --n_timesteps 100000 --layout simple;
+# python RL_scripts/RL_multitrain.py --configs '[55, 56, 57, 58, 59, 60, 61, 62]' --n_tries 2 --n_timesteps 100000 --layout simple;
 # python ./decision-transformer/gym/experiment.py --env blend --dataset medium --dataset_version v4 --env_type simple --model_type dt --batch_size 128 --max_iters 50 -lr 0.005

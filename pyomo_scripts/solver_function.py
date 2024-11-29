@@ -30,6 +30,7 @@ d_quals_lb = {'p1': 0, 'p2': 0}
 d_quals_ub = {'p1': 0.16, 'p2': 0.1}
 d_inv_ub = {'p1': 30, 'p2': 30}
 betaT_d = {'p1': 2, 'p2': 1}
+betaT_s = {'s1': 0, 's2': 0}
 
 properties = ["q1"]
 timestamps = list(range(T))
@@ -44,10 +45,9 @@ def solve(tau0, delta0, layout,
         sigma_ub = sigma_ub,
         sigma_lb = sigma_lb,
         s_inv_ub = s_inv_ub,
-        d_quals_lb = d_quals_lb,
-        d_quals_ub = d_quals_ub,
         d_inv_ub = d_inv_ub,
         betaT_d = betaT_d,
+        betaT_s = betaT_s,
         b_inv_ub = b_inv_ub,
         mingap = 0.005, maxtime = 30):
     
@@ -65,12 +65,15 @@ def solve(tau0, delta0, layout,
     model.timestamps = Set(initialize=timestamps)
 
     # Parameters
+    model.alpha = Param(initialize=alpha)
+    model.beta = Param(initialize=beta)
     model.s_inv_ub = Param(model.sources, initialize=s_inv_ub)
     model.tau0 = Param(model.sources, initialize=tau0)
-    model.d_quals_lb = Param(model.demands, initialize=d_quals_lb)
-    model.d_quals_ub = Param(model.demands, initialize=d_quals_ub)
+    model.sigma_lb = Param(model.demands, initialize=sigma_lb)
+    model.sigma_ub = Param(model.demands, initialize=sigma_ub)
     model.d_inv_ub = Param(model.demands, initialize=d_inv_ub)
     model.delta0 = Param(model.demands, initialize=delta0)
+    model.betaT_s = Param(model.sources, initialize=betaT_s)
     model.betaT_d = Param(model.demands, initialize=betaT_d)
     model.b_inv_ub = Param(model.blenders, initialize=b_inv_ub)
 
@@ -101,22 +104,21 @@ def solve(tau0, delta0, layout,
         else:
             return model.source_blend_flow[s, j, t] >= 0
         
-    def connections_rule0_3(model, j, p, t):
+    def connections_rule0_2(model, j, p, t):
         if p not in connections["blend_demand"][j]:
             return model.blend_demand_flow[j, p, t] == 0
         else:
             return model.blend_demand_flow[j, p, t] >= 0
         
-    def connections_rule0_4(model, j1, j2, t):
+    def connections_rule0_3(model, j1, j2, t):
         if j2 not in connections["blend_blend"][j1]:
             return model.blend_blend_flow[j1, j2, t] == 0
         else:
             return model.blend_blend_flow[j1, j2, t] >= 0
     
     model.material_balance_rule0_1 = Constraint(model.sources,  model.blenders, model.timestamps, rule=connections_rule0_1)
-    # model.material_balance_rule0_2 = Constraint(model.sources,  model.demands,  model.timestamps, rule=connections_rule0_2)
-    model.material_balance_rule0_3 = Constraint(model.blenders, model.demands,  model.timestamps, rule=connections_rule0_3)
-    model.material_balance_rule0_4 = Constraint(model.blenders, model.blenders, model.timestamps, rule=connections_rule0_4)
+    model.material_balance_rule0_3 = Constraint(model.blenders, model.demands,  model.timestamps, rule=connections_rule0_2)
+    model.material_balance_rule0_4 = Constraint(model.blenders, model.blenders, model.timestamps, rule=connections_rule0_3)
 
     # Inventory bounds
     def connections_rule0_1_1(model, j, t):
@@ -248,10 +250,11 @@ def solve(tau0, delta0, layout,
 
     def obj_function(model):
         return  sum( sum(model.betaT_d[p] * (model.demand_sold[p, t]) for p in model.demands) for t in range(T)) \
-                - sum( sum(
-                        sum(alpha * model.source_blend_bin[s, j, t] + beta * model.source_blend_flow[s, j, t] for s in model.sources) \
-                        + sum(alpha * model.blend_blend_bin[j, jp, t] + beta * model.blend_blend_flow[j, jp, t] for jp in model.blenders) \
-                        + sum(alpha * model.blend_demand_bin[j, p, t] + beta * model.blend_demand_flow[j, p, t] for p in model.demands) 
+              - sum( sum(model.betaT_s[s] * (model.offer_bought[s, t]) for s in model.sources) for t in range(T)) \
+              - sum( sum(
+                          sum(model.alpha * model.source_blend_bin[s, j, t] + model.beta * model.source_blend_flow[s, j, t] for s in model.sources) \
+                        + sum(model.alpha * model.blend_blend_bin[j, jp, t] + model.beta * model.blend_blend_flow[j, jp, t] for jp in model.blenders) \
+                        + sum(model.alpha * model.blend_demand_bin[j, p, t] + model.beta * model.blend_demand_flow[j, p, t] for p in model.demands) 
                     for t in model.timestamps) 
                 for j in model.blenders)
 
@@ -268,7 +271,26 @@ def solve(tau0, delta0, layout,
     
     return model, result, solveinfo
 
+
+def get_custom_obj(model, Z):
+    return \
+        Z * sum( sum(model.betaT_d[p] * (model.demand_sold[p, t].value) for p in model.demands) for t in range(T)) \
+          - sum( sum(model.betaT_s[s] * (model.offer_bought[s, t].value) for s in model.sources) for t in range(T)) \
+          - sum( sum(
+                  sum(model.alpha * model.source_blend_bin[s, j, t].value + model.beta * model.source_blend_flow[s, j, t].value for s in model.sources) \
+                + sum(model.alpha * model.blend_blend_bin[j, jp, t].value + model.beta * model.blend_blend_flow[j, jp, t].value for jp in model.blenders) \
+                + sum(model.alpha * model.blend_demand_bin[j, p, t].value + model.beta * model.blend_demand_flow[j, p, t].value for p in model.demands) 
+            for t in model.timestamps) 
+        for j in model.blenders)
+
 if __name__ == "__main__":
-    model, r, info = solve(tau0, delta0, "simple")
-    print(r)
+    tau0   = {s: [10, 10, 10, 0, 0, 0] for s in ["s1", "s2"]}
+    delta0 = {d: [0, 0, 0, 10, 10, 10] for d in ["p1", "p2"]}
+    
+    print(sigma, sigma_ub)
+    # Calculating the resulting reward from an optimal model
+    model, result, solveinfo = solve(tau0, delta0, "simple", 
+                                        sigma = sigma, sigma_ub = sigma_ub, sigma_lb = sigma_lb,
+                                        alpha = 1, beta = 1)
+    print(model.obj(), get_custom_obj(model, 2))
 

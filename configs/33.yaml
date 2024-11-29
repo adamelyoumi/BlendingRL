@@ -9,6 +9,7 @@ env:
   Z: 100
   alpha: 0.1
   beta: 1
+  challenging_concentrations: false
   illeg_act_handling: prop
   max_pen_violations: 3
   maxflow: 500

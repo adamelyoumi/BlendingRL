@@ -16,6 +16,9 @@ from stable_baselines3.common.utils import safe_mean
 from envs import BlendEnv, flatten_and_track_mappings, reconstruct_dict
 from models import CustomMLP_ACP_simplest_softmax, CustomMLP_ACP_simplest_std
 from utils import *
+from pyomo_scripts.solver_function import solve, get_custom_obj
+import logging
+logging.getLogger('pyomo.core').setLevel(logging.ERROR)
 
 import yaml
 import warnings
@@ -26,6 +29,7 @@ import argparse
 
 def params_equal(a, b):
     return all([th.all(t1 == t2).item() for t1, t2 in zip(a["policy"].values(), b["policy"].values())])
+
 
 class CustomLoggingCallbackPPO(BaseCallback):
     def __init__(self, schedule_timesteps, start_log_std=2, end_log_std=-1, std_control = None):
@@ -40,7 +44,7 @@ class CustomLoggingCallbackPPO(BaseCallback):
         self.print_flag = False
         
         self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
-        self.n_pen_M, self.n_pen_B, self.n_pen_P, self.pen_nv, self.pen_nv_counted = [], [], [], [], []
+        self.n_pen_M, self.n_pen_B, self.n_pen_P, self.n_pen_Q, self.pen_nv, self.pen_nv_counted = [], [], [], [], [], []
         self.units_sold, self.units_bought, self.rew_sold, self.rew_depth = [], [], [], []
         
     def _on_rollout_end(self) -> None:
@@ -51,6 +55,7 @@ class CustomLoggingCallbackPPO(BaseCallback):
         self.logger.record("penalties/n_in_out",            sum(self.n_pen_M)/len(self.n_pen_M))
         self.logger.record("penalties/n_buysell_bounds",    sum(self.n_pen_B)/len(self.n_pen_B))
         self.logger.record("penalties/n_tank_bounds",       sum(self.n_pen_P)/len(self.n_pen_P))
+        self.logger.record("penalties/n_concentration",     sum(self.n_pen_Q)/len(self.n_pen_Q))
         self.logger.record("penalties/n_vltn",              sum(self.pen_nv)/len(self.pen_nv))
         self.logger.record("penalties/n_vltn_counted",      sum(self.pen_nv_counted)/len(self.pen_nv_counted))
         
@@ -62,7 +67,7 @@ class CustomLoggingCallbackPPO(BaseCallback):
         self.perfs.append(safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer]))
         
         self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
-        self.n_pen_M, self.n_pen_B, self.n_pen_P, self.pen_nv, self.pen_nv_counted = [], [], [], [], []
+        self.n_pen_M, self.n_pen_B, self.n_pen_P, self.n_pen_Q, self.pen_nv, self.pen_nv_counted = [], [], [], [], [], []
         self.units_sold, self.units_bought, self.rew_sold, self.rew_depth = [], [], [], []
         
     def _on_step(self) -> bool:
@@ -77,11 +82,14 @@ class CustomLoggingCallbackPPO(BaseCallback):
             self.n_pen_M.append(self.locals["infos"][0]["pen_tracker"]["n_M"])
             self.n_pen_B.append(self.locals["infos"][0]["pen_tracker"]["n_B"])
             self.n_pen_P.append(self.locals["infos"][0]["pen_tracker"]["n_P"])
+            self.n_pen_Q.append(self.locals["infos"][0]["pen_tracker"]["n_Q"])
             self.pen_nv.append(self.locals["infos"][0]["pen_tracker"]["n_M"] +
                                self.locals["infos"][0]["pen_tracker"]["n_B"] +
+                               self.locals["infos"][0]["pen_tracker"]["n_Q"] +
                                self.locals["infos"][0]["pen_tracker"]["n_P"])
             self.pen_nv_counted.append(self.locals["infos"][0]["pen_tracker"]["n_M"] if cfg["env"]["M"] > 0 else 0 +
                                        self.locals["infos"][0]["pen_tracker"]["n_B"] if cfg["env"]["B"] > 0 else 0 +
+                                       self.locals["infos"][0]["pen_tracker"]["n_Q"] if cfg["env"]["Q"] > 0 else 0 +
                                        self.locals["infos"][0]["pen_tracker"]["n_P"] if cfg["env"]["P"] > 0 else 0)
             # print(self.pen_nv, self.pen_nv_counted, self.n_pen_M, self.n_pen_B, self.n_pen_P)
             self.units_sold.append(self.locals["infos"][0]["pen_tracker"]["units_sold"])
@@ -118,8 +126,6 @@ class CustomLoggingCallbackPPO(BaseCallback):
 # warnings.filterwarnings("ignore")
 
 
-
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--configs")
 parser.add_argument("--n_tries")
@@ -138,14 +144,7 @@ connections, action_sample = get_jsons(args.layout)
 
 sources, blenders, demands = get_sbp(connections)
 
-if args.layout == "base":
-    sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}}
-    sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}}
-    sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
-else:
-    sigma = {s:{"q1": 0.06} for s in sources}       # No quality requirements
-    sigma_ub = {d:{"q1": 0.16} for d in demands}    # No quality requirements
-    sigma_lb = {d:{"q1": 0} for d in demands}       # No quality requirements
+
     
 s_inv_lb = {s: 0 for s in sources}
 s_inv_ub = {s: 999 for s in sources}
@@ -175,7 +174,22 @@ for id, train_id in enumerate(CONFIGS):
                 s = "".join(f.readlines())
                 cfg = yaml.load(s, Loader=yaml.FullLoader)
             
-            betaT_s = {s: cfg["env"]["product_cost"]  for s in sources} # Cost of bought products
+            if len(sources) == 2 and len(demands) == 2:
+                betaT_s = {s: cfg["env"]["product_cost"]  for s in sources} # Cost of bought products
+                betaT_d = {"p1": 2, "p2": 1} # Price of sold products
+            elif len(sources) == 1 and len(demands) == 1:
+                betaT_s = {sources[0]: cfg["env"]["product_cost"]} # Cost of bought products
+                betaT_d = {demands[0]: 2*cfg["env"]["product_cost"]} # Price of sold products
+                
+            
+            if cfg["env"]["challenging_concentrations"]:
+                sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}}
+                sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}}
+                sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
+            else:
+                sigma = {s:{"q1": 0.06} for s in sources}       # No quality requirements
+                sigma_ub = {d:{"q1": 0.16} for d in demands}    # No quality requirements
+                sigma_lb = {d:{"q1": 0} for d in demands}       # No quality requirements
             
             T = 6
             if cfg["env"]["uniform_data"]:
@@ -188,9 +202,36 @@ for id, train_id in enumerate(CONFIGS):
                 else:
                     tau0   = {s: [np.random.normal(20, 3) for _ in range(13)] for s in sources}
                     delta0 = {d: [np.random.normal(20, 3) for _ in range(13)] for d in demands}
+                    
             else:
                 tau0   = {s: [10, 10, 10, 0, 0, 0] for s in sources}
                 delta0 = {d: [0, 0, 0, 10, 10, 10] for d in demands}
+                
+                # Calculating the resulting reward from an optimal model
+                model, result, solveinfo = solve(tau0, delta0, args.layout, 
+                                                sigma = sigma, sigma_ub = sigma_ub, sigma_lb = sigma_lb,
+                                                betaT_d = betaT_d, betaT_s = betaT_s,
+                                                alpha = cfg["env"]["alpha"], beta = cfg["env"]["beta"], 
+                                                mingap=0)
+                
+                actions = get_actions(model)
+
+                env_tot = BlendEnv(D = cfg["env"]["D"], Z = cfg["env"]["Z"], 
+                                tau0 = tau0, delta0 = delta0, T = T, 
+                                betaT_d = betaT_d, betaT_s = betaT_s,
+                                alpha = cfg["env"]["alpha"], beta = cfg["env"]["beta"], 
+                                connections = connections, action_sample = action_sample,
+                                v = True)
+                
+                obs_, _ = env_tot.reset()
+                env_tot.reset()
+                for t in range(6):
+                    print("obs:", th.round(th.Tensor(obs_), decimals=10))
+                    print("act:", th.round(th.Tensor(actions[t]), decimals=10))
+                    obs_, reward_tot, terminated, truncated, info = env_tot.step(actions[t])
+                    print(reward_tot)
+                
+                print(f"############# optimal_value #############\nobj_Z,D: {reward_tot}, obj_Z: {get_custom_obj(model, cfg['env']['Z'])}, obj: {model.obj()}\n#########################################")
 
             env = BlendEnv(v = False, T = T,
                     D = cfg["env"]["D"], Q = cfg["env"]["Q"], 
@@ -294,7 +335,6 @@ for id, train_id in enumerate(CONFIGS):
             
             else:
                 print("Set parameters randomly")
-            
             
             
             if old_params is not None:

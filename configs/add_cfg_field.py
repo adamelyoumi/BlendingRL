@@ -8,8 +8,8 @@ import yaml
 
 
 attrib_name_1 = 'env'
-attrib_name_2 = 'illeg_act_handling'
-default_value = 'prop'
+attrib_name_2 = 'challenging_concentrations'
+default_value = False
 
 folder_path = './configs'
 
