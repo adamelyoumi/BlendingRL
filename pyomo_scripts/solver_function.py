@@ -20,17 +20,15 @@ delta0 = {"p1": [0] + [10]*6, "p2": [0] + [10]*6}
 
 
 T = 6
-alpha = 0.1
-beta = 0.1
 sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}}
 sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}}
 sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
 s_inv_ub = {'s1': 30, 's2': 30}
-d_quals_lb = {'p1': 0, 'p2': 0}
-d_quals_ub = {'p1': 0.16, 'p2': 0.1}
 d_inv_ub = {'p1': 30, 'p2': 30}
 betaT_d = {'p1': 2, 'p2': 1}
 betaT_s = {'s1': 0, 's2': 0}
+alpha = 0.1
+beta = 0.1
 
 properties = ["q1"]
 timestamps = list(range(T))
@@ -49,7 +47,9 @@ def solve(tau0, delta0, layout,
         betaT_d = betaT_d,
         betaT_s = betaT_s,
         b_inv_ub = b_inv_ub,
-        mingap = 0.005, maxtime = 30):
+        mingap = 0.005, 
+        maxtime = 30,
+        coef_sym = 0.001):
     
     connections, action_sample = get_jsons(layout)
     sources, blenders, demands = get_sbp(connections)
@@ -247,16 +247,26 @@ def solve(tau0, delta0, layout,
 
     model.material_balance_rule7_1 = Constraint(model.properties, model.demands, model.blenders, model.timestamps, rule=material_balance_rule7_1)
     model.material_balance_rule7_2 = Constraint(model.properties, model.demands, model.blenders, model.timestamps, rule=material_balance_rule7_2)
-
+    
+    
     def obj_function(model):
-        return  sum( sum(model.betaT_d[p] * (model.demand_sold[p, t]) for p in model.demands) for t in range(T)) \
-              - sum( sum(model.betaT_s[s] * (model.offer_bought[s, t]) for s in model.sources) for t in range(T)) \
-              - sum( sum(
-                          sum(model.alpha * model.source_blend_bin[s, j, t] + model.beta * model.source_blend_flow[s, j, t] for s in model.sources) \
-                        + sum(model.alpha * model.blend_blend_bin[j, jp, t] + model.beta * model.blend_blend_flow[j, jp, t] for jp in model.blenders) \
-                        + sum(model.alpha * model.blend_demand_bin[j, p, t] + model.beta * model.blend_demand_flow[j, p, t] for p in model.demands) 
-                    for t in model.timestamps) 
-                for j in model.blenders)
+        return sum(sum(model.betaT_d[p] * model.demand_sold[p, t] * (1 - 0.01 * t) for p in model.demands) for t in model.timestamps) \
+            - sum(sum(model.betaT_s[s] * model.offer_bought[s, t] * (1 - 0.01 * t) for s in model.sources) for t in model.timestamps) \
+            - sum(sum(
+                sum(model.alpha * model.source_blend_bin[s, j, t] + model.beta * model.source_blend_flow[s, j, t] for s in model.sources) \
+                + sum(model.alpha * model.blend_blend_bin[j, jp, t] + model.beta * model.blend_blend_flow[j, jp, t] for jp in model.blenders) \
+                + sum(model.alpha * model.blend_demand_bin[j, p, t] + model.beta * model.blend_demand_flow[j, p, t] for p in model.demands)
+            for t in model.timestamps) for j in model.blenders) \
+            - coef_sym * sum(sum(model.offer_bought[s, t] * (ord(s[1]) - ord('0')) for s in model.sources) for t in model.timestamps) \
+            - coef_sym * sum(sum(sum(model.source_blend_flow[s, j, t] * (ord(j[1]) - ord('0')) for s in model.sources) for j in model.blenders) for t in model.timestamps) \
+            - coef_sym * sum(sum(sum(model.blend_demand_flow[j, p, t] * (ord(p[1]) - ord('0')) for j in model.blenders) for p in model.demands) for t in model.timestamps)
+           
+
+
+    # Pareto optimum
+    # lexicographical optimum
+    # Omnisafe package
+    # Safety Gym
 
     model.obj = Objective(rule=obj_function, sense=maximize)
 
@@ -269,10 +279,29 @@ def solve(tau0, delta0, layout,
     
     solveinfo = result.json_repn()
     
+    print("LOGGING 2:")
+    print(  "\ntau0:", tau0, 
+            "\ndelta0:", delta0, 
+            "\nalpha:", alpha,
+            "\nbeta:", beta,
+            "\nproperties:", properties,
+            "\ntimestamps:", timestamps,
+            "\nsigma:", sigma,
+            "\nsigma_ub:", sigma_ub,
+            "\nsigma_lb:", sigma_lb,
+            "\ns_inv_ub:", s_inv_ub,
+            "\nd_inv_ub:", d_inv_ub,
+            "\nbetaT_d:", betaT_d,
+            "\nbetaT_s:", betaT_s,
+            "\nb_inv_ub:", b_inv_ub,
+            "\nmingap:", mingap, 
+            "\nmaxtime:", maxtime,
+            "\ncoef_sym:", coef_sym)
+    
     return model, result, solveinfo
 
 
-def get_custom_obj(model, Z):
+def get_custom_obj(model, Z=1):
     return \
         Z * sum( sum(model.betaT_d[p] * (model.demand_sold[p, t].value) for p in model.demands) for t in range(T)) \
           - sum( sum(model.betaT_s[s] * (model.offer_bought[s, t].value) for s in model.sources) for t in range(T)) \
@@ -291,6 +320,9 @@ if __name__ == "__main__":
     # Calculating the resulting reward from an optimal model
     model, result, solveinfo = solve(tau0, delta0, "simple", 
                                         sigma = sigma, sigma_ub = sigma_ub, sigma_lb = sigma_lb,
-                                        alpha = 1, beta = 1)
-    print(model.obj(), get_custom_obj(model, 2))
+                                        alpha = 0.1, beta = 0.1)
+    for t in model.timestamps:
+        for x in (model.prop_blend_inv["q1", j , t].value for j in model.blenders): print(x)
+        print("\n")
+    print(model.obj(), get_custom_obj(model), get_custom_obj(model, 2))
 

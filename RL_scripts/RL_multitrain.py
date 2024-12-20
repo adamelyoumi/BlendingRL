@@ -32,7 +32,7 @@ def params_equal(a, b):
 
 
 class CustomLoggingCallbackPPO(BaseCallback):
-    def __init__(self, schedule_timesteps, start_log_std=2, end_log_std=-1, std_control = None):
+    def __init__(self, schedule_timesteps, start_log_std=2, end_log_std=-1, std_control = None, model_name = None):
         super().__init__(verbose = 0)
         self.std_control = std_control
         
@@ -42,6 +42,7 @@ class CustomLoggingCallbackPPO(BaseCallback):
         self.current_step = 0
         self.perfs = []
         self.print_flag = False
+        self.model_name = model_name
         
         self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
         self.n_pen_M, self.n_pen_B, self.n_pen_P, self.n_pen_Q, self.pen_nv, self.pen_nv_counted = [], [], [], [], [], []
@@ -64,11 +65,14 @@ class CustomLoggingCallbackPPO(BaseCallback):
         self.logger.record("penalties/rew_sold",            sum(self.rew_sold)/len(self.rew_sold))
         self.logger.record("penalties/rew_depth",           sum(self.rew_depth)/len(self.rew_depth))
         
-        self.perfs.append(safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer]))
-        
         self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
         self.n_pen_M, self.n_pen_B, self.n_pen_P, self.n_pen_Q, self.pen_nv, self.pen_nv_counted = [], [], [], [], [], []
         self.units_sold, self.units_bought, self.rew_sold, self.rew_depth = [], [], [], []
+        
+        this_model_name = self.model_name + datetime.datetime.now().strftime('%m%d-%H%M%S')
+        self.perfs[this_model_name] = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
+        self.model.save(this_model_name)
+        
         
     def _on_step(self) -> bool:
         log_std: th.Tensor = self.model.policy.log_std
@@ -212,7 +216,7 @@ for id, train_id in enumerate(CONFIGS):
                                                 sigma = sigma, sigma_ub = sigma_ub, sigma_lb = sigma_lb,
                                                 betaT_d = betaT_d, betaT_s = betaT_s,
                                                 alpha = cfg["env"]["alpha"], beta = cfg["env"]["beta"], 
-                                                mingap=0)
+                                                mingap=0.05)
                 
                 actions = get_actions(model)
 
@@ -347,20 +351,21 @@ for id, train_id in enumerate(CONFIGS):
             cliprange = str(model.clip_range(0)) if type(model) == PPO else ""
             model_name = f"models/{args.layout}/{bin_}/{cfg['id']}/{cfg['id']}_{datetime.datetime.now().strftime('%m%d-%H%M%S')}"
             
-            callback = CustomLoggingCallbackPPO(schedule_timesteps=N_TIMESTEPS, std_control = cfg["clipped_std"])
+            callback = CustomLoggingCallbackPPO(schedule_timesteps=N_TIMESTEPS, std_control = cfg["clipped_std"], model_name = model_name)
 
             print("Model name:", model_name)
             logpath = model_name[len("models/"):]
             print(f"Logging at logs/{logpath}")
+            
             model.learn(total_timesteps = N_TIMESTEPS,
                         progress_bar = False,
                         tb_log_name = logpath,
                         callback = callback,
                         reset_num_timesteps = False)
             
-            perfs[model_name] = sum(callback.perfs[-3:])/3 # Average reward over the last 10 rollouts
-
-            model.save(model_name)
+            # perfs[model_name] = sum(callback.perfs[-3:])/3 # Average reward over the last 3 rollouts
+            perfs = callback.perfs
+            # model.save(model_name)
             
             del model
                     

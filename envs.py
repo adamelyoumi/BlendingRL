@@ -9,14 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import os, sys
 from utils import *
-
-"""
-    Penalties to add (?):
-        -
-    Continuous reward: is it really a problem ?
-    Are changes only going to be related to supply and demand, or also tank number and connections ? 
-        Only supply/demand
-"""
+from PIL import Image, ImageDraw, ImageFont
 
 def assign_env_config(self, kwargs):
     for key, value in kwargs.items():
@@ -33,12 +26,14 @@ def assign_env_config(self, kwargs):
             else:
                 raise AttributeError(f"{self} has no attribute, {key}")
 
+
 def clip(x,a,b):
     if x>b:
         return b
     elif x<a:
         return a
     return x
+
 
 def dict_to_gym_space(d):
     sub_spaces = {}
@@ -49,6 +44,7 @@ def dict_to_gym_space(d):
             sub_spaces[key] = Box(low=value, high=value, shape=(1,), dtype=float)
     return Dict(sub_spaces)
 
+
 def flatten_dict(dictionary, parent_key='', separator=';'):
     items = []
     for key, value in dictionary.items():
@@ -58,6 +54,7 @@ def flatten_dict(dictionary, parent_key='', separator=';'):
         else:
             items.append((new_key, value))
     return dict(items)
+
 
 def flatten_and_track_mappings(dictionary, separator=';'):
     flattened_dict = flatten_dict(dictionary, separator=separator)
@@ -72,12 +69,14 @@ def nested_set(dic, keys, value):
     dic[keys[-1]] = value
     return(dic)
     
+    
 def reconstruct_dict(flattened_array, mappings, separator=';'):
     reconstructed_dict = {}
     for index, keys in mappings:
         nested_set(reconstructed_dict, keys, flattened_array[index])
     
     return reconstructed_dict
+
 
 def get_index(mapping, L):
     for i, items in mapping:
@@ -120,9 +119,10 @@ class BlendEnv(gym.Env):
         self.D = 1              # Multiplier representing the influence of the depth
         self.L0_pen = 1
         
-        self.eps = 1e-2         # Tolerance for breaking in/out rule and other "== 0" checks
+        self.eps = 1e-3         # Tolerance for breaking in/out rule, concentration rule and other "== 0" checks
         self.reg = 0            # Regularization type. 0 for no reg, 1 for L1 reg., 2 for L2 etc
         self.reg_lambda = 1     # Regularization factor
+        
         self.MAXFLOW = 50
         self.determ = True
         self.max_pen_violations = 999
@@ -138,8 +138,8 @@ class BlendEnv(gym.Env):
         self.delta0 = {'p1': [0, 0, 15, 15, 15, 15], 'p2': [0, 0, 15, 15, 15, 15]}
         
         self.sigma = {"s1":{"q1": 0.06}, "s2":{"q1": 0.26}} # Source concentrations
-        self.sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}} # Demand concentrations UBs/LBs
-        self.sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
+        self.sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 1}} # Demand concentrations UBs
+        self.sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}    # Demand concentrations LBs
         
         self.s_inv_lb = {'s1': 0, 's2': 0}
         self.s_inv_ub = {'s1': 999, 's2': 999}
@@ -219,7 +219,7 @@ class BlendEnv(gym.Env):
             outgoing = sum([action["source_blend"][s][j] for j in action["source_blend"][s].keys()])
             newinv = self.state["sources"][s] - outgoing + action["tau"][s]
             # Enforcing bounds
-            if newinv > self.s_inv_ub[s]: # inv too high -> reduce bought amount
+            if newinv > self.s_inv_ub[s] + self.eps: # inv too high -> reduce bought amount
                 
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB): {action['tau'][s]} vs {self.state['sources_avail_next_0'][s]}")
                 self.reward -= self.B * (self.L0_pen + newinv - self.s_inv_ub[s])
@@ -235,7 +235,7 @@ class BlendEnv(gym.Env):
                     action["tau"][s] = 0
                 
                 
-            elif newinv < self.s_inv_lb[s]: # inv too low -> reduce outgoing amount
+            elif newinv < self.s_inv_lb[s] - self.eps: # inv too low -> reduce outgoing amount
                 
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too little (resulting amount less than source tank LB)")
                 self.reward -= self.B * (self.L0_pen + self.s_inv_lb[s] - newinv)
@@ -320,7 +320,7 @@ class BlendEnv(gym.Env):
             
             # Enforcing inventory bounds
             # NB: we assume "no in and out" rule is respected
-            if newinv > self.b_inv_ub[j]: # inv too high -> reduce incoming amount
+            if newinv > self.b_inv_ub[j] + self.eps: # inv too high -> reduce incoming amount
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount more than blending tank UB)")
                 self.reward -= self.P * (self.L0_pen + newinv - self.b_inv_ub[j])
                 self.pen_tracker["P"] -= self.P * (self.L0_pen + newinv - self.b_inv_ub[j])
@@ -346,7 +346,7 @@ class BlendEnv(gym.Env):
                             action["blend_blend"][jp][j] = 0
                 
                 
-            elif newinv < self.b_inv_lb[j]: # inv too low -> reduce outgoing amount
+            elif newinv < self.b_inv_lb[j] - self.eps: # inv too low -> reduce outgoing amount
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount less than blending tank LB)")
                 self.reward -= self.P * (self.L0_pen + self.b_inv_lb[j] - newinv)
                 self.pen_tracker["P"] -= self.P * (self.L0_pen + self.b_inv_lb[j] - newinv)
@@ -410,7 +410,7 @@ class BlendEnv(gym.Env):
             newinv = self.state["demands"][p] + incoming - action["delta"][p] 
             
             # Enforcing inventory bounds
-            if newinv > self.d_inv_ub[p]: # inv too high -> reduce incoming amount
+            if newinv > self.d_inv_ub[p] + self.eps: # inv too high -> reduce incoming amount
                 self.reward -= self.B * (self.L0_pen + newinv - self.d_inv_ub[p])
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + newinv - self.d_inv_ub[p])
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too little (resulting amount more than demand tank UB)")
@@ -429,7 +429,7 @@ class BlendEnv(gym.Env):
                             action["blend_demand"][jp][p] = 0
                             
                 
-            elif newinv < self.d_inv_lb[p]:  # inv too low -> reduce sold amount
+            elif newinv < self.d_inv_lb[p] - self.eps:  # inv too low -> reduce sold amount
                 self.reward -= self.B * (self.L0_pen + self.d_inv_lb[p] - newinv)
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + self.d_inv_lb[p] - newinv)
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than demand tank LB)")
@@ -461,26 +461,36 @@ class BlendEnv(gym.Env):
         # Properties                      
         for j in self.blenders:
             for q in self.properties:
+                self.logg(f"\t[INFO10] t{self.t}; {j}; {q}; \t\t\t {self.state['blenders'][j]}")
+                
                 if self.state["blenders"][j] < self.eps:
-                    self.state["properties"][j][q] = 0
+                    self.state['properties'][j][q] = 0
                 else:
                     in_flow_sources = in_flow_blend = out_flow_blend = out_flow_demands = 0
                     for s in self.sources:
                         if j in action["source_blend"][s].keys():
-                            in_flow_sources += action["source_blend"][s][j] * self.sigma[s][q]
+                            self.logg(f"[INFO11] t{self.t}; {s}; {q}; \t\t\t {action['source_blend'][s][j]}; {self.sigma[s][q]}")
+                            in_flow_sources += action['source_blend'][s][j] * self.sigma[s][q]
                     for jp in self.blenders:
-                        if "blend_blend" in action.keys() and j in action["blend_blend"][jp].keys():
-                            in_flow_blend += action["blend_blend"][jp][j] * self.state["properties"][jp][q]
-                        if "blend_blend" in action.keys() and jp in action["blend_blend"][j].keys():
-                            out_flow_blend += action["blend_blend"][j][jp] * self.state["properties"][jp][q]
+                        if 'blend_blend' in action.keys() and j in action['blend_blend'][jp].keys():
+                            self.logg(f"[INFO12] t{self.t}; {jp}; {q}; \t\t\t {action['blend_blend'][jp][j]}; {self.state['properties'][jp][q]}")
+                            in_flow_blend += action['blend_blend'][jp][j] * self.state['properties'][jp][q]
+                        if 'blend_blend' in action.keys() and jp in action['blend_blend'][j].keys():
+                            self.logg(f"[INFO13] t{self.t}; {jp}; {q}; \t\t\t {action['blend_blend'][j][jp]}; {self.state['properties'][j][q]}")
+                            out_flow_blend += action['blend_blend'][j][jp] * self.state['properties'][j][q]
                     for p in self.demands:
                         if p in action["blend_demand"][j].keys():
-                            out_flow_demands += action["blend_demand"][j][p] * self.state["properties"][j][q]
+                            self.logg(f"[INFO14] t{self.t}; {p}; {q}; \t\t\t {action['blend_demand'][j][p]}; {self.state['properties'][j][q]}")
+                            out_flow_demands += action["blend_demand"][j][p] * self.state['properties'][j][q]
 
-                    self.state["properties"][j][q] = (1/self.state["blenders"][j]) * ( \
-                                                    self.state["properties"][j][q] * prev_blend_invs[j] \
+                    self.logg(f"[INFO15] t{self.t}; {j}; {q}; \t\t\t {in_flow_sources }; { in_flow_blend}; {out_flow_blend}; {out_flow_demands}")
+                    self.logg(f"[INFO2] t{self.t}; {j}; {q}; \t\t\t Previous: {self.state['blenders'][j]}; {self.state['properties'][j][q]}; {in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands}")
+                    self.state['properties'][j][q] = (1/self.state["blenders"][j]) * ( \
+                                                    self.state['properties'][j][q] * prev_blend_invs[j] \
                                                     + in_flow_sources + in_flow_blend - out_flow_blend - out_flow_demands
                                                 )
+                    
+                    self.logg(f"[INFO3] t{self.t}; {j}; {q}; \t\t\t New property value: {self.state['properties'][j][q]}")
 
         
         self.update_reward2(action)
@@ -527,7 +537,7 @@ class BlendEnv(gym.Env):
             "sources": {s:0 for s in self.sources},
             "blenders": {b:0 for b in self.blenders},
             "demands": {p:0 for p in self.demands},
-            "properties": {b: {q:0 for q in self.properties} for b in self.blenders}
+            'properties': {b: {q:0 for q in self.properties} for b in self.blenders}
         }
         
         for k in range(self.forecast_window_len):
@@ -546,6 +556,7 @@ class BlendEnv(gym.Env):
             L = ["source_blend", "blend_blend", "blend_demand"]
         else:
             L = ["source_blend", "blend_demand"]
+            
         for k in L:
             for tank1 in action[k].keys():
                 for tank2 in action[k][tank1].keys():
@@ -584,7 +595,7 @@ class BlendEnv(gym.Env):
         
         
     def penalty_quality(self, p, q, j, action):
-        if (self.state["properties"][j][q] < self.sigma_lb[p][q] or self.state["properties"][j][q] > self.sigma_ub[p][q]) \
+        if (self.state['properties'][j][q] < self.sigma_lb[p][q] - self.eps or self.state['properties'][j][q] > self.sigma_ub[p][q] + self.eps) \
                 and (p in action["blend_demand"][j].keys() and action["blend_demand"][j][p] > 0):
             self.logg(f"[PEN] t{self.t}; {p}; {q}; {j}:\t\t\tSold qualities out of bounds ({self.state['properties'][j][q]})")
             self.pen_tracker["n_Q"] += 1
@@ -709,14 +720,69 @@ class BlendEnv(gym.Env):
                 self.pen_tracker["n_B"] += 1
                 action["delta"][p] = self.state["demands"][p]
         
-        
+    def render_img(self, action):
+        # Load the base image
+        img = Image.open("img\\env_base.png")
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype("arial.ttf", 12)  # Adjust font and size as needed
+
+        # Define positions for each tank (you may need to adjust these)
+        positions = {
+            "sources": {"s1": (100, 200), "s2": (100, 300)},
+            "blenders": {"j1": (300, 100), "j2": (300, 200), "j3": (300, 300), "j4": (300, 400), 
+                         "j5": (500, 100), "j6": (500, 200), "j7": (500, 300), "j8": (500, 400)},
+            "demands": {"p1": (700, 200), "p2": (700, 300)}
+        }
+
+        # Draw inventory values for each tank
+        for tank_type in ["sources", "blenders", "demands"]:
+            for tank, pos in positions[tank_type].items():
+                value = self.state[tank_type][tank]
+                draw.text(pos, f"{value:.2f}", fill="black", font=font)
+
+        # Draw available values for sources and demands
+        for s, pos in positions["sources"].items():
+            value = self.state["sources_avail_next_0"][s]
+            draw.text((pos[0], pos[1] - 20), f"Avail: {value:.2f}", fill="blue", font=font)
+
+        for d, pos in positions["demands"].items():
+            value = self.state["demands_avail_next_0"][d]
+            draw.text((pos[0], pos[1] - 20), f"Avail: {value:.2f}", fill="blue", font=font)
+
+        # Draw action values if provided
+        if action is not None:
+            # Define positions for each arrow (you may need to adjust these)
+            arrow_positions = {
+                "s1_j1": (200, 150), "s1_j2": (200, 200), "s1_j3": (200, 250), "s1_j4": (200, 300),
+                "s2_j1": (200, 200), "s2_j2": (200, 250), "s2_j3": (200, 300), "s2_j4": (200, 350),
+                
+                # "j1_j5": (350, 150), "j1_j6": (350, 200), "j1_j7": (350, 250), "j1_j8": (350, 250),
+                # "j2_j5": (350, 150), "j2_j6": (350, 200), "j2_j7": (350, 250), "j2_j8": (350, 250),
+                # "j3_j5": (350, 150), "j3_j6": (350, 200), "j3_j7": (350, 250), "j3_j8": (350, 250),
+                # "j4_j5": (350, 150), "j4_j6": (350, 200), "j4_j7": (350, 250), "j4_j8": (350, 250),
+
+                "j5_p1": (400, 150), "j5_p2": (400, 200),
+                "j6_p1": (400, 200), "j6_p2": (400, 250),
+                "j7_p1": (400, 250), "j7_p2": (400, 300),
+                "j8_p1": (400, 300), "j8_p2": (400, 350)
+            }
+
+            for key, value in action.items():
+                if key in arrow_positions:
+                    pos = arrow_positions[key]
+                    draw.text(pos, f"{value:.2f}", fill="red", font=font)
+
+        # Convert PIL Image to numpy array
+        return np.array(img)
+
+    
     def render(self, action = None):
         
         print(f"\nt{self.t}:\n")
         
         if action is not None:
             M = [[action["source_blend"][s][b] for b in self.blenders] for s in self.sources]
-            N = [[action["blend_blend"][b1][b2] for b2 in self.blenders] for b1 in self.blenders]
+            N = [[action["blend_blend"][j1][b2] for b2 in self.blenders] for j1 in self.blenders]
             O = [[action["blend_demand"][b][p] for p in self.demands] for b in self.blenders]
 
         Mi = [self.state["sources"][s] for s in self.sources]
@@ -747,137 +813,4 @@ class BlendEnv(gym.Env):
             print(*args)
         return
 
-        
-class MaskedBlendEnv(BlendEnv):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        
-        self.action_space = MultiDiscrete(len(self.flatt_act_sample)*[int((self.MAXFLOW/5)+1)])
-        
-        self.act_mask      = th.ones(self.action_space.shape[0], dtype=th.float32)
-        self.act_mask_dict = reconstruct_dict(self.act_mask, self.mapping_act)
-        
-    def step(self, action):
-        action = action * 5
-        obs, reward, done, term, info = super().step(action)
-        
-        self.action_masks()
-        
-        return obs, reward, done, term, info
-        
-    def action_masks(self):
-        self.act_mask      = th.tensor([1] * self.action_space.shape[0], dtype=th.float32)
-        self.act_mask_dict = reconstruct_dict(self.act_mask, self.mapping_act)
-        
-        for s in self.sources:
-            if self.state["sources"][s] == self.s_inv_lb:  # No outgoing flow
-                for jp in self.act_mask_dict["source_blend"][s].keys():
-                    self.act_mask_dict["source_blend"][s][jp] = 0
-                    
-            if self.state["sources"][s] == self.s_inv_ub or self.state["sources_avail_next_0"] == 0:  # No incoming flow
-                self.act_mask_dict["tau"][s] = 0
-            
-                
-        for j in self.blenders:
-            if self.state["blenders"][j] == self.b_inv_lb:  # No outgoing flow
-                if j in self.act_mask_dict["blend_blend"].keys():
-                    for jp in self.act_mask_dict["blend_blend"][j].keys():
-                        self.act_mask_dict["blend_blend"][j][jp] = 0
-                if j in self.act_mask_dict["blend_demand"].keys():
-                    for p in self.act_mask_dict["blend_demand"][j].keys():
-                        self.act_mask_dict["blend_demand"][j][p] = 0
-            
-            if self.state["blenders"][j] == self.b_inv_ub:  # No incoming flow
-                for jp in self.act_mask_dict["blend_blend"].keys():
-                    if j in self.act_mask_dict["blend_blend"][jp].keys():
-                        self.act_mask_dict["blend_blend"][jp][j] = 0
-                for s in self.act_mask_dict["source_blend"].keys():
-                    self.act_mask_dict["source_blend"][s][j] = 0
-                
-                
-        for p in self.demands:
-            if self.state["demands"][p] == self.d_inv_lb or self.state["demands_avail_next_0"] == 0: # No outgoing flow
-                self.act_mask_dict["delta"][p] = 0
-                
-            if self.state["demands"][p] == self.d_inv_ub:  # No incoming flow
-                for jp in self.act_mask_dict["blend_demand"].keys():
-                    self.act_mask_dict["blend_demand"][jp][p] = 0
-                    
-        self.act_mask, _ = flatten_and_track_mappings(self.act_mask_dict)
-        
-        L = []
-        for k in self.act_mask:
-            L.append([k]*int((self.MAXFLOW/5)+1))
-            L[-1][0] = 1
-        
-        return np.array(L, dtype=np.float32)
 
-
-tau0   = {'s1': [10, 10, 10, 0, 0, 0]}
-delta0 = {'p1': [0, 0, 0, 10, 10, 10]}
-sigma = {"s1":{"q1": 0.06}} # Source concentrations
-sigma_ub = {"p1":{"q1": 0.16}} # Demand concentrations UBs/LBs
-sigma_lb = {"p1":{"q1": 0}}
-s_inv_lb = {'s1': 0}
-s_inv_ub = {'s1': 999}
-d_inv_lb = {'p1': 0}
-d_inv_ub = {'p1': 999}
-betaT_d = {'p1': 1} # Price of sold products
-betaT_s = {'s1': 0} # Cost of bought products
-b_inv_ub = {"j1": 30} 
-b_inv_lb = {j:0 for j in b_inv_ub.keys()} 
-
-connections, action_sample = get_jsons("simplest")
-
-simplestenv = BlendEnv(v = False, 
-               D=0, Q = 0, P = 0, B = 0, Z = 1E4, M = 1E3,
-               connections = connections, 
-               action_sample = action_sample,
-               tau0 = tau0,
-               delta0 = delta0,
-               sigma = sigma,
-               sigma_ub = sigma_ub,
-               sigma_lb = sigma_lb,
-               s_inv_lb = s_inv_lb,
-               s_inv_ub = s_inv_ub,
-               d_inv_lb = d_inv_lb,
-               d_inv_ub = d_inv_ub,
-               betaT_d = betaT_d,
-               betaT_s = betaT_s,
-               b_inv_ub = b_inv_ub,
-               b_inv_lb = b_inv_lb)
-
-
-tau0   = {'s1': [10, 10, 10, 0, 0, 0], 's2': [10, 10, 10, 0, 0, 0]}
-delta0 = {'p1': [0, 0, 0, 10, 10, 10], 'p2': [0, 0, 0, 10, 10, 10]}
-sigma = {"s1":{"q1": 0.06}, "p2":{"q1": 0.26}} # Source concentrations
-sigma_ub = {"p1":{"q1": 0.16}, "p2":{"q1": 0.16}} # Demand concentrations UBs/LBs
-sigma_lb = {"p1":{"q1": 0}, "p2":{"q1": 0}}
-s_inv_lb = {'s1': 0, 's2': 0}
-s_inv_ub = {'s1': 999, 's2': 999}
-d_inv_lb = {'p1': 0, 'p2': 0}
-d_inv_ub = {'p1': 999, 'p2': 999}
-betaT_d = {'p1': 1} # Price of sold products
-betaT_s = {'s1': 0} # Cost of bought products
-b_inv_ub = {"j1": 30, "j2": 30, "j3": 30, "j4": 30} 
-b_inv_lb = {j:0 for j in b_inv_ub.keys()} 
-
-connections, action_sample = get_jsons("simple")
-
-simpleenv = BlendEnv(v = False, 
-               D=0, Q = 0, P = 0, B = 0, Z = 1E4, M = 1E3,
-               connections = connections, 
-               action_sample = action_sample,
-               tau0 = tau0,
-               delta0 = delta0,
-               sigma = sigma,
-               sigma_ub = sigma_ub,
-               sigma_lb = sigma_lb,
-               s_inv_lb = s_inv_lb,
-               s_inv_ub = s_inv_ub,
-               d_inv_lb = d_inv_lb,
-               d_inv_ub = d_inv_ub,
-               betaT_d = betaT_d,
-               betaT_s = betaT_s,
-               b_inv_ub = b_inv_ub,
-               b_inv_lb = b_inv_lb)
