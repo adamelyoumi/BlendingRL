@@ -295,14 +295,6 @@ row_data = ["param1", "param2", "param3", "param4","param5","Obj"]
 sheet.append(row_data)
 
 
-
-    
-    
-    
-
-    
-
-
 def instance_1(x1,x2,x3,x4):
     param_val = [0,0,0,0,0,0,0,0,0]
     param_val[0] = x1
@@ -604,3 +596,12 @@ bo.maximize(
     #MBBF(1.0,1.0,1.0,1.0,1.0,1.0,1.0)'''
 #print(bo.max)
 #MBBF_val(0.558857075,1,1,0.154025966)
+
+
+
+# Other code:
+# Assuming all s/j and j/p are connected ?
+# Why define dict space only to get back to a single box space ?
+# No supply/demand values only because it is a black box env right ? Wait, it is in the config ? For penalty only ?
+
+# Returned cumulative rew over the episode or rew at each step ?
