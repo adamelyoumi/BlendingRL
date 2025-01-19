@@ -7,5 +7,8 @@ __pycache__/
 /.vscode/
 *.pyc
 /data/
+/logs/
+/logs2/
+/logs_os/
 *.pem
 *.lic

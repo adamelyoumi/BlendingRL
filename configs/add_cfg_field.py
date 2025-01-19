@@ -8,14 +8,14 @@ import yaml
 
 
 attrib_name_1 = 'env'
-attrib_name_2 = 'challenging_concentrations'
+attrib_name_2 = 'shrink_data'
 default_value = False
 
 folder_path = './configs'
 
 def add(attrib_name_1, default_value, attrib_name_2 = None):
     for filename in os.listdir(folder_path):
-        if filename.endswith('.yaml') or filename.endswith('.yml'):
+        if (filename.endswith('.yaml') or filename.endswith('.yml')) and ("_ref" not in filename):
             file_path = os.path.join(folder_path, filename)
             
             with open(file_path, 'r') as f:
@@ -29,7 +29,7 @@ def add(attrib_name_1, default_value, attrib_name_2 = None):
             
 def remove(attrib_name_1, attrib_name_2 = None):
     for filename in os.listdir(folder_path):
-        if filename.endswith('.yaml') or filename.endswith('.yml'):
+        if (filename.endswith('.yaml') or filename.endswith('.yml')) and ("_ref" not in filename):
             file_path = os.path.join(folder_path, filename)
             
             with open(file_path, 'r') as f:

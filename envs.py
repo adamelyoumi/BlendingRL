@@ -106,6 +106,8 @@ class BlendEnv(gym.Env):
         """
         super().__init__()
         
+        self.layout = "base"
+        
         self.T = 6
         self.alpha = 0.1
         self.beta = 0
@@ -120,17 +122,11 @@ class BlendEnv(gym.Env):
         self.L0_pen = 1
         
         self.eps = 1e-3         # Tolerance for breaking in/out rule, concentration rule and other "== 0" checks
-        self.reg = 0            # Regularization type. 0 for no reg, 1 for L1 reg., 2 for L2 etc
-        self.reg_lambda = 1     # Regularization factor
         
         self.MAXFLOW = 50
         self.determ = True
         self.max_pen_violations = 999
         self.illeg_act_handling = "prop"
-        
-        with open("./configs/json/connections_base.json" ,"r") as f:
-            connections_s = f.readline()
-        self.connections = json.loads(connections_s)
         
         self.properties = ["q1"]
         
@@ -154,11 +150,16 @@ class BlendEnv(gym.Env):
         
         self.forecast_window_len = 6
         
-        with open("./configs/json/action_sample_base.json" ,"r") as f:
+        
+        assign_env_config(self, kwargs)
+        
+        with open(f"./configs/json/action_sample_{self.layout}.json" ,"r") as f:
             action = f.readline()
         self.action_sample = json.loads(action)
         
-        assign_env_config(self, kwargs)
+        with open(f"./configs/json/connections_{self.layout}.json" ,"r") as f:
+            connections_s = f.readline()
+        self.connections = json.loads(connections_s)
         
         self.sources = list(self.tau0.keys())
         self.demands = list(self.delta0.keys())
@@ -194,11 +195,7 @@ class BlendEnv(gym.Env):
         
         self.t += 1
         
-        # Applying regularization before adjusting action
-        
-        regularization_term = self.reg_lambda * (th.norm(th.Tensor(action), p=self.reg).item() if self.reg else 0)
-        self.reward -= regularization_term
-        self.pen_tracker["reg"] -= regularization_term
+        old_reward = self.reward_ep
         
         action = action.tolist()
         action = reconstruct_dict(action, self.mapping_act) # From non-human-readable list to human-readable dict
@@ -222,7 +219,7 @@ class BlendEnv(gym.Env):
             if newinv > self.s_inv_ub[s] + self.eps: # inv too high -> reduce bought amount
                 
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB): {action['tau'][s]} vs {self.state['sources_avail_next_0'][s]}")
-                self.reward -= self.B * (self.L0_pen + newinv - self.s_inv_ub[s])
+                self.reward_ep -= self.B * (self.L0_pen + newinv - self.s_inv_ub[s])
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + newinv - self.s_inv_ub[s])
                 self.pen_tracker["n_B"] += 1
                 
@@ -238,7 +235,7 @@ class BlendEnv(gym.Env):
             elif newinv < self.s_inv_lb[s] - self.eps: # inv too low -> reduce outgoing amount
                 
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too little (resulting amount less than source tank LB)")
-                self.reward -= self.B * (self.L0_pen + self.s_inv_lb[s] - newinv)
+                self.reward_ep -= self.B * (self.L0_pen + self.s_inv_lb[s] - newinv)
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + self.s_inv_lb[s] - newinv)
                 self.pen_tracker["n_B"] += 1
                 
@@ -258,7 +255,7 @@ class BlendEnv(gym.Env):
             incr = self.depths[s] * max(0, newinv - self.state["sources"][s])
             if incr:
                 self.logg(f"[INFO] Increased reward by {incr} through tank population in {s}")
-            self.reward += incr
+            self.reward_ep += incr
             self.pen_tracker["rew_depth"] += incr
             
             # Updating inv
@@ -288,7 +285,7 @@ class BlendEnv(gym.Env):
             # Enforcing No in and out flow
             if (in_flow_sources + in_flow_blend > self.eps) and (out_flow_blend + out_flow_demands > self.eps):
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tIn and out flow both non-zero (in: {round(in_flow_sources + in_flow_blend, 2)}, out: {round(out_flow_blend + out_flow_demands, 2)})")
-                self.reward -= self.M
+                self.reward_ep -= self.M
                 self.pen_tracker["M"] -= self.M
                 self.pen_tracker["n_M"] += 1
                 
@@ -322,7 +319,7 @@ class BlendEnv(gym.Env):
             # NB: we assume "no in and out" rule is respected
             if newinv > self.b_inv_ub[j] + self.eps: # inv too high -> reduce incoming amount
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount more than blending tank UB)")
-                self.reward -= self.P * (self.L0_pen + newinv - self.b_inv_ub[j])
+                self.reward_ep -= self.P * (self.L0_pen + newinv - self.b_inv_ub[j])
                 self.pen_tracker["P"] -= self.P * (self.L0_pen + newinv - self.b_inv_ub[j])
                 self.pen_tracker["n_P"] += 1
                 
@@ -348,7 +345,7 @@ class BlendEnv(gym.Env):
                 
             elif newinv < self.b_inv_lb[j] - self.eps: # inv too low -> reduce outgoing amount
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory OOB (resulting amount less than blending tank LB)")
-                self.reward -= self.P * (self.L0_pen + self.b_inv_lb[j] - newinv)
+                self.reward_ep -= self.P * (self.L0_pen + self.b_inv_lb[j] - newinv)
                 self.pen_tracker["P"] -= self.P * (self.L0_pen + self.b_inv_lb[j] - newinv)
                 self.pen_tracker["n_P"] += 1
                 
@@ -374,7 +371,7 @@ class BlendEnv(gym.Env):
             incr = self.depths[j] * max(0, newinv - self.state["blenders"][j])
             if incr:
                 self.logg(f"[INFO] Increased reward by {incr} through tank population in {j}")
-            self.reward += incr
+            self.reward_ep += incr
             self.pen_tracker["rew_depth"] += incr
             
             # Computing rectified newinv
@@ -411,7 +408,7 @@ class BlendEnv(gym.Env):
             
             # Enforcing inventory bounds
             if newinv > self.d_inv_ub[p] + self.eps: # inv too high -> reduce incoming amount
-                self.reward -= self.B * (self.L0_pen + newinv - self.d_inv_ub[p])
+                self.reward_ep -= self.B * (self.L0_pen + newinv - self.d_inv_ub[p])
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + newinv - self.d_inv_ub[p])
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too little (resulting amount more than demand tank UB)")
                 self.pen_tracker["n_B"] += 1
@@ -430,7 +427,7 @@ class BlendEnv(gym.Env):
                             
                 
             elif newinv < self.d_inv_lb[p] - self.eps:  # inv too low -> reduce sold amount
-                self.reward -= self.B * (self.L0_pen + self.d_inv_lb[p] - newinv)
+                self.reward_ep -= self.B * (self.L0_pen + self.d_inv_lb[p] - newinv)
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + self.d_inv_lb[p] - newinv)
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than demand tank LB)")
                 self.pen_tracker["n_B"] += 1
@@ -447,7 +444,7 @@ class BlendEnv(gym.Env):
             incr = self.depths[p] * max(0, newinv - self.state["demands"][p])
             if incr:
                 self.logg(f"[INFO] Increased reward by {incr} through tank population in {p}")
-            self.reward += incr
+            self.reward_ep += incr
             self.pen_tracker["rew_depth"] += incr
             
             incoming = 0
@@ -516,18 +513,20 @@ class BlendEnv(gym.Env):
                         self.pen_tracker["n_Q"] if self.Q > 0 else 0
         if n_violations >= self.max_pen_violations:
             self.truncated = True
+            
+        reward = self.reward_ep - old_reward
         
-        return self.flatt_state, self.reward, self.terminated, self.truncated, {"dict_state": self.state, "pen_tracker": self.pen_tracker, 
+        return self.flatt_state, reward, self.terminated, self.truncated, {"dict_state": self.state, "pen_tracker": self.pen_tracker, 
                                                                                 "terminated": self.terminated, "truncated": self.truncated}
     
         
     def reset(self, seed=0):
-        self.t = self.reward = 0
+        self.t = self.reward_ep = 0
         self.get_new_start_state()
         self.truncated = self.terminated = False
         self.pen_tracker = {"M": 0, "B": 0, "P": 0, "Q": 0, 
                             "n_M": 0, "n_B": 0, "n_P": 0, "n_Q": 0, 
-                            "reg": 0, "units_sold": 0, "units_bought": 0, "rew_sold": 0, "rew_depth": 0, "rew_bought": 0}
+                            "units_sold": 0, "units_bought": 0, "rew_sold": 0, "rew_depth": 0, "rew_bought": 0}
         self.flatt_state, _ = flatten_and_track_mappings(self.state)
         return self.flatt_state, {"dict_state": self.state, "pen_tracker": self.pen_tracker, "terminated": self.terminated, "truncated": self.truncated}
     
@@ -563,7 +562,7 @@ class BlendEnv(gym.Env):
                     Q_float += action[k][tank1][tank2]
                     Q_bin   += 1 if action[k][tank1][tank2] > 0 else 0 
                     
-        self.reward -= (self.alpha * Q_bin + self.beta * Q_float)
+        self.reward_ep -= (self.alpha * Q_bin + self.beta * Q_float)
         
         
     def update_reward2(self, action):
@@ -586,7 +585,7 @@ class BlendEnv(gym.Env):
                 for p in self.demands:
                     R2 -= self.penalty_quality(p, q, j, action)
 
-        self.reward += R2
+        self.reward_ep += R2
         
         self.pen_tracker["units_sold"] += units_sold
         self.pen_tracker["rew_sold"] += rew_sold
@@ -655,7 +654,7 @@ class BlendEnv(gym.Env):
         # Add penalty and log if trying to buy too much product
         for s in self.sources:
             if action["tau"][s] > self.state["sources_avail_next_0"][s]:
-                self.reward -= self.B * (self.L0_pen + action["tau"][s] - self.state["sources_avail_next_0"][s]) # incur penalty
+                self.reward_ep -= self.B * (self.L0_pen + action["tau"][s] - self.state["sources_avail_next_0"][s]) # incur penalty
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + action["tau"][s] - self.state["sources_avail_next_0"][s])
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (more than supply): {action['tau'][s]} vs {self.state['sources_avail_next_0'][s]}")
                 self.pen_tracker["n_B"] += 1
@@ -664,7 +663,7 @@ class BlendEnv(gym.Env):
         # Add penalty and log if trying to sell too much product (more than available demand or more than available inventory)
         for p in self.demands:
             if action["delta"][p] > self.state["demands_avail_next_0"][p]:
-                self.reward -= self.B * (self.L0_pen + action["delta"][p] - self.state["demands_avail_next_0"][p]) # incur penalty
+                self.reward_ep -= self.B * (self.L0_pen + action["delta"][p] - self.state["demands_avail_next_0"][p]) # incur penalty
                 self.pen_tracker["B"] -= self.B * (self.L0_pen + action["delta"][p] - self.state["demands_avail_next_0"][p])
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (more than demand)")
                 self.pen_tracker["n_B"] += 1
@@ -684,14 +683,14 @@ class BlendEnv(gym.Env):
         """
         for s in self.sources:
             if self.state["sources"][s] >= self.s_inv_ub[s] or self.state["sources"][s] <= self.s_inv_lb[s]:
-                self.reward -= self.P if pen else 0 # incur penalty
+                self.reward_ep -= self.P if pen else 0 # incur penalty
                 self.pen_tracker["P"] -= self.P
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tinventory out of bounds")
                 self.pen_tracker["n_P"] += 1
                 self.state["sources"][s] = clip(self.state["sources"][s], self.s_inv_lb[s], self.s_inv_ub[s])
                 
             if action["tau"][s] > self.s_inv_ub[s] - self.state["sources"][s]:
-                self.reward -= self.B if pen else 0 # incur penalty
+                self.reward_ep -= self.B if pen else 0 # incur penalty
                 self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {s}:\t\t\tbought too much (resulting amount more than source tank UB)")
                 self.pen_tracker["n_B"] += 1
@@ -699,7 +698,7 @@ class BlendEnv(gym.Env):
                 
         for j in self.blenders:
             if self.state["blenders"][j] >= self.b_inv_ub[j] or self.state["blenders"][j] <= self.b_inv_lb[j]:
-                self.reward -= self.P if pen else 0 # incur penalty
+                self.reward_ep -= self.P if pen else 0 # incur penalty
                 self.pen_tracker["P"] -= self.P
                 self.logg(f"[PEN] t{self.t}; {j}:\t\t\tinventory out of bounds")
                 self.pen_tracker["n_P"] += 1
@@ -707,76 +706,67 @@ class BlendEnv(gym.Env):
         
         for p in self.demands:
             if self.state["demands"][p] >= self.d_inv_ub[p] or self.state["demands"][p] <= self.d_inv_lb[p]:
-                self.reward -= self.P if pen else 0 # incur penalty
+                self.reward_ep -= self.P if pen else 0 # incur penalty
                 self.pen_tracker["P"] -= self.P
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tinventory out of bounds")
                 self.pen_tracker["n_P"] += 1
                 self.state["demands"][p] = clip(self.state["demands"][p], self.d_inv_lb[p], self.d_inv_ub[p])
                 
             if action["delta"][p] > self.state["demands"][p] - self.d_inv_lb[p]:
-                self.reward -= self.B if pen else 0 # incur penalty
+                self.reward_ep -= self.B if pen else 0 # incur penalty
                 self.pen_tracker["B"] -= self.B
                 self.logg(f"[PEN] t{self.t}; {p}:\t\t\tsold too much (resulting amount less than tank LB)")
                 self.pen_tracker["n_B"] += 1
                 action["delta"][p] = self.state["demands"][p]
         
-    def render_img(self, action):
+    def render(self, action = None):
         # Load the base image
-        img = Image.open("img\\env_base.png")
+        img = Image.open(f"img\\env_{self.layout}.png")
         draw = ImageDraw.Draw(img)
         font = ImageFont.truetype("arial.ttf", 12)  # Adjust font and size as needed
 
         # Define positions for each tank (you may need to adjust these)
-        positions = {
-            "sources": {"s1": (100, 200), "s2": (100, 300)},
-            "blenders": {"j1": (300, 100), "j2": (300, 200), "j3": (300, 300), "j4": (300, 400), 
-                         "j5": (500, 100), "j6": (500, 200), "j7": (500, 300), "j8": (500, 400)},
-            "demands": {"p1": (700, 200), "p2": (700, 300)}
-        }
+        if self.layout == "base":
+            positions = {
+                "sources": {"s1": (140, 170), "s2": (140, 243)},
+                "blenders": {"j1": (243, 97), "j2": (243, 170), "j3": (243, 243), "j4": (243, 314), 
+                            "j5": (332, 97), "j6": (332, 170), "j7": (332, 243), "j8": (332, 314)},
+                "demands": {"p1": (424, 170), "p2": (424, 243)}
+            }
+        elif self.layout == "simple":
+            positions = {
+                "sources": {"s1": (116, 170), "s2": (116, 240)},
+                "blenders": {"j1": (217, 98), "j2": (217, 170), "j3": (217, 240), "j4": (217, 309)},
+                "demands": {"p1": (311, 170), "p2": (311, 240)}
+            }
 
         # Draw inventory values for each tank
         for tank_type in ["sources", "blenders", "demands"]:
             for tank, pos in positions[tank_type].items():
                 value = self.state[tank_type][tank]
-                draw.text(pos, f"{value:.2f}", fill="black", font=font)
+                draw.text((pos[0] + 3, pos[1]), f"{value:.1f}", fill=color_gradient(value), font=font)
 
         # Draw available values for sources and demands
+        
         for s, pos in positions["sources"].items():
             value = self.state["sources_avail_next_0"][s]
-            draw.text((pos[0], pos[1] - 20), f"Avail: {value:.2f}", fill="blue", font=font)
+            draw.text((pos[0] - 70, pos[1] - 20), f"Avail: {value:.1f}", fill="black", font=font)
+            if action is not None:
+                bought = action["tau"][s]
+                draw.text((pos[0] - 70, pos[1] + 20), f"Bought: {bought:.1f}", fill="blue", font=font)
 
         for d, pos in positions["demands"].items():
             value = self.state["demands_avail_next_0"][d]
-            draw.text((pos[0], pos[1] - 20), f"Avail: {value:.2f}", fill="blue", font=font)
-
-        # Draw action values if provided
-        if action is not None:
-            # Define positions for each arrow (you may need to adjust these)
-            arrow_positions = {
-                "s1_j1": (200, 150), "s1_j2": (200, 200), "s1_j3": (200, 250), "s1_j4": (200, 300),
-                "s2_j1": (200, 200), "s2_j2": (200, 250), "s2_j3": (200, 300), "s2_j4": (200, 350),
-                
-                # "j1_j5": (350, 150), "j1_j6": (350, 200), "j1_j7": (350, 250), "j1_j8": (350, 250),
-                # "j2_j5": (350, 150), "j2_j6": (350, 200), "j2_j7": (350, 250), "j2_j8": (350, 250),
-                # "j3_j5": (350, 150), "j3_j6": (350, 200), "j3_j7": (350, 250), "j3_j8": (350, 250),
-                # "j4_j5": (350, 150), "j4_j6": (350, 200), "j4_j7": (350, 250), "j4_j8": (350, 250),
-
-                "j5_p1": (400, 150), "j5_p2": (400, 200),
-                "j6_p1": (400, 200), "j6_p2": (400, 250),
-                "j7_p1": (400, 250), "j7_p2": (400, 300),
-                "j8_p1": (400, 300), "j8_p2": (400, 350)
-            }
-
-            for key, value in action.items():
-                if key in arrow_positions:
-                    pos = arrow_positions[key]
-                    draw.text(pos, f"{value:.2f}", fill="red", font=font)
+            draw.text((pos[0] + 40, pos[1] - 20), f"Avail: {value:.1f}", fill="black", font=font)
+            if action is not None:
+                sold = action["delta"][d]
+                draw.text((pos[0] + 40, pos[1] + 20), f"Sold: {sold:.1f}", fill="blue", font=font)
 
         # Convert PIL Image to numpy array
         return np.array(img)
 
     
-    def render(self, action = None):
+    def render_txt(self, action = None):
         
         print(f"\nt{self.t}:\n")
         
@@ -806,7 +796,7 @@ class BlendEnv(gym.Env):
         print(Ni)
         print(Oi)
             
-        print("\n\n\n\nReward:", self.reward)
+        print("\n\n\n\nReward:", self.reward_ep)
         
     def logg(self, *args):
         if self.v:

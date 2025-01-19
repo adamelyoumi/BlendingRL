@@ -1,4 +1,11 @@
 import torch as th
+import yaml
+import os
+
+if os.name == "posix":
+    base_dir = "/home/ubuntu/bp"
+else:
+    base_dir = 'C:\\Users\\adame\\OneDrive\\Bureau\\CODE\\BlendingRL'
 
 def get_bin(n):
     return f"{(n//12)*12+1}-{(n//12+1)*12}"
@@ -112,3 +119,88 @@ def get_actions(model):
                     model.demand_sold["p2", t].value,               # (19, ['delta', 'p2'])
         ])
     return th.Tensor(dataact)
+
+
+def cfg_to_omni(cfg_id: int, layout, device = "cuda:0", total_steps = 1e6, parallel=1, algo = "P3O"):
+    with open(f"./configs/{cfg_id}.yaml", "r") as f:
+        s = "".join(f.readlines())
+    cfg = yaml.load(s, Loader=yaml.FullLoader)
+        
+    with open(f"./blendv2/Lib/site-packages/omnisafe/configs/on-policy/{algo}.yaml") as f:
+        s = "".join(f.readlines())
+    ref: dict = yaml.load(s, Loader=yaml.FullLoader)["defaults"]
+    
+    custom_cfgs = {
+        'train_cfgs': {
+            'total_steps': int(total_steps),
+            'device': device,
+            'parallel': parallel
+        },
+        
+        'algo_cfgs': {
+            "steps_per_epoch": 20000,
+            "update_iters": 10,
+            "batch_size": cfg["model"]["batch_size"],
+            "entropy_coef": cfg["model"]["ent_coef"],
+            "reward_normalize": cfg["reward_normalizer"],
+            "cost_normalize": cfg["reward_normalizer"],
+            "obs_normalize": cfg["obs_normalizer"],
+        },
+        
+        "logger_cfgs":{"log_dir": f"./logs_os/{layout}/{get_bin(cfg_id)}/{str(cfg_id)}"},
+        
+        "model_cfgs":{
+            "actor":{
+                "hidden_sizes": [cfg["model"]["arch_layersize"]] * cfg["model"]["arch_n"],
+                "activation": cfg["model"]["act_fn"].lower(),
+                # "lr": cfg["model"]["lr"]
+            },
+            "critic":{
+                "hidden_sizes": [cfg["model"]["arch_layersize"]] * cfg["model"]["arch_n"],
+                "activation": cfg["model"]["act_fn"].lower(),
+                # "lr": None
+            }
+        },
+        
+        'env_cfgs': {
+            'layout': layout,
+            'B': cfg["env"]["B"],
+            'D': cfg["env"]["D"],
+            'M': cfg["env"]["M"],
+            'P': cfg["env"]["P"],
+            'Q': cfg["env"]["Q"],
+            'Z': cfg["env"]["Z"],
+            
+            'alpha': cfg["env"]["alpha"],
+            'beta': cfg["env"]["beta"],
+            'challenging_concentrations': cfg["env"]["challenging_concentrations"],
+            'illeg_act_handling': cfg["env"]["illeg_act_handling"],
+            'max_pen_violations': cfg["env"]["max_pen_violations"],
+            'maxflow': cfg["env"]["maxflow"],
+            'product_cost': cfg["env"]["product_cost"],
+            'uniform_data': cfg["env"]["uniform_data"]
+        }
+    }
+    
+    for k in custom_cfgs.keys():
+        if k not in ref.keys():
+            ref[k] = custom_cfgs[k]
+            continue
+        
+        for k2 in custom_cfgs[k].keys():
+            if isinstance(custom_cfgs[k][k2], dict):
+                for k3 in custom_cfgs[k][k2]:
+                    ref[k][k2][k3] = custom_cfgs[k][k2][k3]
+                    
+            else:
+                ref[k][k2] = custom_cfgs[k][k2]
+    
+    return ref
+
+
+def color_gradient(value):
+    value = max(0, min(30, value))
+    normalized = value / 30
+    red = int(255 * (1 - normalized))
+    green = int(255 * normalized)
+    return (red, green, 0)

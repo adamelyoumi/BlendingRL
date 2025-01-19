@@ -19,6 +19,8 @@ from utils import *
 from pyomo_scripts.solver_function import solve, get_custom_obj
 import logging
 logging.getLogger('pyomo.core').setLevel(logging.ERROR)
+from multiprocessing import Pool, cpu_count
+from PIL import Image
 
 import yaml
 import warnings
@@ -26,13 +28,18 @@ import datetime
 import argparse
 
 
+if os.name == "posix":
+    base_dir = "/home/ubuntu/bp"
+else:
+    base_dir = 'C:\\Users\\adame\\OneDrive\\Bureau\\CODE\\BlendingRL'
+
 
 def params_equal(a, b):
     return all([th.all(t1 == t2).item() for t1, t2 in zip(a["policy"].values(), b["policy"].values())])
 
 
 class CustomLoggingCallbackPPO(BaseCallback):
-    def __init__(self, schedule_timesteps, start_log_std=2, end_log_std=-1, std_control = None, model_name = None):
+    def __init__(self, schedule_timesteps, start_log_std=2, end_log_std=-1, std_control = None, model_name = None, v = None):
         super().__init__(verbose = 0)
         self.std_control = std_control
         
@@ -47,6 +54,7 @@ class CustomLoggingCallbackPPO(BaseCallback):
         self.pen_M, self.pen_B, self.pen_P, self.pen_reg = [], [], [], []
         self.n_pen_M, self.n_pen_B, self.n_pen_P, self.n_pen_Q, self.pen_nv, self.pen_nv_counted = [], [], [], [], [], []
         self.units_sold, self.units_bought, self.rew_sold, self.rew_depth = [], [], [], []
+        self.v = v
         
     def _on_rollout_end(self) -> None:
         self.logger.record("penalties/in_out",              sum(self.pen_M)/len(self.pen_M))
@@ -69,9 +77,9 @@ class CustomLoggingCallbackPPO(BaseCallback):
         self.n_pen_M, self.n_pen_B, self.n_pen_P, self.n_pen_Q, self.pen_nv, self.pen_nv_counted = [], [], [], [], [], []
         self.units_sold, self.units_bought, self.rew_sold, self.rew_depth = [], [], [], []
         
-        this_model_name = self.model_name + datetime.datetime.now().strftime('%m%d-%H%M%S')
-        self.perfs[this_model_name] = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
-        self.model.save(this_model_name)
+        # this_model_name = self.model_name + datetime.now().strftime('%m%d-%H%M%S')
+        self.perfs.append(safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer]))
+        # self.model.save(this_model_name)
         
         
     def _on_step(self) -> bool:
@@ -101,23 +109,33 @@ class CustomLoggingCallbackPPO(BaseCallback):
             self.rew_sold.append(self.locals["infos"][0]["pen_tracker"]["rew_sold"])
             self.rew_depth.append(self.locals["infos"][0]["pen_tracker"]["rew_depth"])
         
-        if self.num_timesteps%2048 < 6 and t == 1: # start printing
-            self.print_flag = True
-            
-        # if self.print_flag:
-        #     print("\nt:", t)
-        #     if np.isnan(self.locals['rewards'][0]) or np.isinf(self.locals['rewards'][0]):
-        #         print(f"is invalid reward {self.locals['rewards'][0]}")
-        #     for i in ['obs_tensor', 'clipped_actions', 'rewards']:
-        #         if i in self.locals:
-        #             print(f"{i}: " + str(self.locals[i]))
-        #     print(self.n_pen_M, self.n_pen_B, self.n_pen_P, self.n_pen_M, self.n_pen_B, self.n_pen_P,
-        #           self.units_sold, self.units_bought, self.rew_sold, self.rew_depth)
-        #     if t == 6:
-        #         self.print_flag = False
-        #         print(f"\n\nLog-Std at step {self.num_timesteps}: {log_std.detach().cpu().numpy()}")
-        #         print(self.locals["infos"][0]["pen_tracker"])
-        #         print("\n\n\n\n\n")
+        if self.v:
+            if self.num_timesteps%10000 < 6 and t == 1: # start printing
+                self.print_flag = True
+                
+            if self.print_flag:
+                if self.v == "text":
+                    print("\nt:", t)
+                    if np.isnan(self.locals['rewards'][0]) or np.isinf(self.locals['rewards'][0]):
+                        print(f"is invalid reward {self.locals['rewards'][0]}")
+                    for i in ['obs_tensor', 'clipped_actions', 'rewards']:
+                        if i in self.locals:
+                            print(f"{i}: " + str(self.locals[i]))
+                
+                elif self.v == "img":
+                    try:
+                        img = self.training_env.get_attr("render")[0]()
+                        pil_image = Image.fromarray(img)
+                        pil_image.save(f"{model_name.replace('models', 'logs2')}_0/img/{self.num_timesteps}_{t}.png")
+                        
+                    except FileNotFoundError:
+                        os.mkdir(os.path.join(os.getcwd(), f"{model_name.replace('models', 'logs2')}_0/img"))
+                
+                if t == 6:
+                    self.print_flag = False
+                    print(f"\n\nLog-Std at step {self.num_timesteps}: {log_std.detach().cpu().numpy()}")
+                    print(self.locals["infos"][0]["pen_tracker"])
+                    print("\n\n")
         
         if self.std_control:
             progress = self.current_step / self.schedule_timesteps
@@ -126,8 +144,6 @@ class CustomLoggingCallbackPPO(BaseCallback):
             self.current_step += 1
         
         return True
-
-# warnings.filterwarnings("ignore")
 
 
 parser = argparse.ArgumentParser()
@@ -148,7 +164,8 @@ connections, action_sample = get_jsons(args.layout)
 
 sources, blenders, demands = get_sbp(connections)
 
-
+# with Pool(processes=cpu_count()) as pool:
+#     results = pool.map(process_point, points)
     
 s_inv_lb = {s: 0 for s in sources}
 s_inv_ub = {s: 999 for s in sources}
@@ -237,12 +254,13 @@ for id, train_id in enumerate(CONFIGS):
                 
                 print(f"############# optimal_value #############\nobj_Z,D: {reward_tot}, obj_Z: {get_custom_obj(model, cfg['env']['Z'])}, obj: {model.obj()}\n#########################################")
 
-            env = BlendEnv(v = False, T = T,
+            env = BlendEnv(v = False, T = T, layout = args.layout,
                     D = cfg["env"]["D"], Q = cfg["env"]["Q"], 
                     P = cfg["env"]["P"], B = cfg["env"]["B"], 
                     Z = cfg["env"]["Z"], M = cfg["env"]["M"],
-                    reg = cfg["env"]["reg"],
+                    reg = cfg["env"]["reg"], 
                     reg_lambda = cfg["env"]["reg_lambda"],
+                    L0_pen = cfg["env"]["L0_pen"],
                     MAXFLOW = cfg["env"]["maxflow"],
                     alpha = cfg["env"]["alpha"], beta = cfg["env"]["beta"], 
                     max_pen_violations = cfg["env"]["max_pen_violations"],
@@ -287,7 +305,7 @@ for id, train_id in enumerate(CONFIGS):
             )
 
             kwa = dict(policy = policytype, env = env,
-                        tensorboard_log = "./logs",
+                        tensorboard_log = "./logs2",
                         clip_range = cfg["model"]["clip_range"],
                         learning_rate = cfg["model"]["lr"],
                         ent_coef = cfg["model"]["ent_coef"],
@@ -304,12 +322,12 @@ for id, train_id in enumerate(CONFIGS):
                     print(f"Set parameters according to {best_model_sequential_train[cfg_start]}")
                 except: # If no best model is available, take the most recent 
                     bin_ = get_bin(cfg_start)
-                    directory = f"C:\\Users\\adame\\OneDrive\\Bureau\\CODE\\BlendingRL\\models\\{args.layout}\\{bin_}\\{cfg_start}"
+                    directory = os.path.join(base_dir, "models", args.layout, bin_, str(cfg_start))
                     chosen, mod_chosen = "", 0
                     for f in os.listdir(directory):
                         mod_time = os.path.getmtime(os.path.join(directory, f))
                         if mod_time > mod_chosen:
-                            chosen = os.path.join("models", {args.layout}, {bin_}, {cfg_start}, f)
+                            chosen = os.path.join("models", args.layout, bin_, str(cfg_start), f)
                     model.set_parameters(chosen)
                     print(f"Set parameters according to {chosen}")
                     
@@ -324,7 +342,7 @@ for id, train_id in enumerate(CONFIGS):
                         print(f"Set parameters according to {best_model_sequential_train[cfg_start]}")
                     except: # If no best model is available, take the most recent 
                         bin_ = get_bin(cfg_start)
-                        directory = f"C:\\Users\\adame\\OneDrive\\Bureau\\CODE\\BlendingRL\\models\\{args.layout}\\{bin_}\\{cfg_start}"
+                        directory = os.path.join(base_dir, "models", args.layout, bin_, str(cfg_start))
                         chosen, mod_chosen = "", 0
                         for f in os.listdir(directory):
                             mod_time = os.path.getmtime(os.path.join(directory, f))
@@ -351,11 +369,12 @@ for id, train_id in enumerate(CONFIGS):
             cliprange = str(model.clip_range(0)) if type(model) == PPO else ""
             model_name = f"models/{args.layout}/{bin_}/{cfg['id']}/{cfg['id']}_{datetime.datetime.now().strftime('%m%d-%H%M%S')}"
             
-            callback = CustomLoggingCallbackPPO(schedule_timesteps=N_TIMESTEPS, std_control = cfg["clipped_std"], model_name = model_name)
+            callback = CustomLoggingCallbackPPO(schedule_timesteps=N_TIMESTEPS, std_control = cfg["clipped_std"], model_name = model_name,
+                                                v="img")
 
             print("Model name:", model_name)
             logpath = model_name[len("models/"):]
-            print(f"Logging at logs/{logpath}")
+            print(f"Logging at logs2/{logpath}")
             
             model.learn(total_timesteps = N_TIMESTEPS,
                         progress_bar = False,
@@ -363,9 +382,8 @@ for id, train_id in enumerate(CONFIGS):
                         callback = callback,
                         reset_num_timesteps = False)
             
-            # perfs[model_name] = sum(callback.perfs[-3:])/3 # Average reward over the last 3 rollouts
-            perfs = callback.perfs
-            # model.save(model_name)
+            perfs[model_name] = sum(callback.perfs[-3:])/3 # Average reward over the last N rollouts
+            model.save(model_name)
             
             del model
                     
@@ -379,16 +397,3 @@ for id, train_id in enumerate(CONFIGS):
         if v > maxperf:
             best_model_sequential_train[train_id] = k # Keeping the best performing model 
             
-            
-"""
-- Continuity check & Imitation learning
-- Sequential training
-    - objective and in/out properly learned even on a 2/4/2 layout with 0/1 constraints, but the models just end up 
-            un-learning the buy/sell rule or settle with "depth reward"
-    - Why aren't some violation numbers starting at where the end of the previous config's curve is ?
-    - We still observe models "lose progress" at some point: make the STD drop faster ? LR scheduling ?
-    - Order of rules important ?
-    - Discrepancy between amounts of product bought and sold
-    - Why does config 37 learn the tank bounds rule and not the buy/sell bounds ?
-- Try very big environment to see if the objective (buy/sell product) is still being learned ? No
-"""

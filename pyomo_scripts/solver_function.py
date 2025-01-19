@@ -10,6 +10,7 @@ import random as rd
 import datetime, time
 import math as m
 import argparse
+import copy
 
 from pyomo.environ import *
 from utils import *
@@ -256,49 +257,55 @@ def solve(tau0, delta0, layout,
                 sum(model.alpha * model.source_blend_bin[s, j, t] + model.beta * model.source_blend_flow[s, j, t] for s in model.sources) \
                 + sum(model.alpha * model.blend_blend_bin[j, jp, t] + model.beta * model.blend_blend_flow[j, jp, t] for jp in model.blenders) \
                 + sum(model.alpha * model.blend_demand_bin[j, p, t] + model.beta * model.blend_demand_flow[j, p, t] for p in model.demands)
-            for t in model.timestamps) for j in model.blenders) \
-            - coef_sym * sum(sum(model.offer_bought[s, t] * (ord(s[1]) - ord('0')) for s in model.sources) for t in model.timestamps) \
-            - coef_sym * sum(sum(sum(model.source_blend_flow[s, j, t] * (ord(j[1]) - ord('0')) for s in model.sources) for j in model.blenders) for t in model.timestamps) \
-            - coef_sym * sum(sum(sum(model.blend_demand_flow[j, p, t] * (ord(p[1]) - ord('0')) for j in model.blenders) for p in model.demands) for t in model.timestamps)
-           
-
-
-    # Pareto optimum
-    # lexicographical optimum
-    # Omnisafe package
-    # Safety Gym
+            for t in model.timestamps) for j in model.blenders)
+    
+    def obj_function_sym(model):
+        return -coef_sym * (
+            sum(sum(model.source_blend_flow[s, j, t] * (ord(j[1]) - ord('0')) * (t+1) for s in model.sources for j in model.blenders) for t in model.timestamps) \
+            + sum(sum(model.blend_demand_flow[j, p, t] * (ord(p[1]) - ord('0')) * (t+1) for j in model.blenders for p in model.demands) for t in model.timestamps) \
+            + sum(sum(model.blend_inv[j, t] * (ord(j[1]) - ord('0')) * (t+1) for j in model.blenders) for t in model.timestamps) \
+            + sum(sum(model.source_inv_before_flow[s, t] * (ord(s[1]) - ord('0')) * (t+1) for s in model.sources) for t in model.timestamps) \
+            + sum(sum(model.source_inv[s, t] * (ord(s[1]) - ord('0')) * (t+1) for s in model.sources) for t in model.timestamps) \
+            + sum(sum(model.demand_inv[p, t] * (ord(p[1]) - ord('0')) * (t+1) for p in model.demands) for t in model.timestamps) \
+            + sum(sum(model.demand_inv_after_sell[p, t] * (ord(p[1]) - ord('0')) * (t+1) for p in model.demands) for t in model.timestamps) \
+            + sum(sum(model.offer_bought[s, t] * (ord(s[1]) - ord('0')) * (t+1) for s in model.sources) for t in model.timestamps) \
+            + sum(sum(model.demand_sold[p, t] * (ord(p[1]) - ord('0')) * (t+1) for p in model.demands) for t in model.timestamps)
+            )
 
     model.obj = Objective(rule=obj_function, sense=maximize)
+    model.obj_sym = Objective(rule=obj_function_sym, sense=maximize)
+
 
     # Solve the model
     solver = SolverFactory('gurobi')
-    solver.options['timelimit'] = maxtime # Stop if runtime > 30s
-    solver.options['mipgap'] = mingap # Stop if gap < 0.5%
+    solver.options['timelimit'] = maxtime   # Stop if runtime > maxtime
+    solver.options['mipgap'] = mingap       # Stop if gap < mingap
 
-    result = solver.solve(model, tee=False)
+    model.obj_sym.deactivate()  # Deactivate lower priority objective
+    results = solver.solve(model)
+    
+    print(f"{delta0['p1'][1]};{delta0['p2'][1]} : Solving main objective done")
+    print(model.obj(), model.obj_sym())
+    model_pre = copy.deepcopy(model)
+
+    # Store the optimal value of the first objective
+    obj_value = model.obj()
+
+    # Fix the first objective and optimize the second
+    model.obj_constraint = Constraint(expr=model.obj == obj_value)
+    
+    model.obj.deactivate()
+    model.obj_sym.activate()
+
+    # Solve for second objective
+    result = solver.solve(model)    
+    
+    print(f"{delta0['p1'][1]};{delta0['p2'][1]} : Solving secondary objective done")
+    print(model.obj(), model.obj_sym())
     
     solveinfo = result.json_repn()
     
-    print("LOGGING 2:")
-    print(  "\ntau0:", tau0, 
-            "\ndelta0:", delta0, 
-            "\nalpha:", alpha,
-            "\nbeta:", beta,
-            "\nproperties:", properties,
-            "\ntimestamps:", timestamps,
-            "\nsigma:", sigma,
-            "\nsigma_ub:", sigma_ub,
-            "\nsigma_lb:", sigma_lb,
-            "\ns_inv_ub:", s_inv_ub,
-            "\nd_inv_ub:", d_inv_ub,
-            "\nbetaT_d:", betaT_d,
-            "\nbetaT_s:", betaT_s,
-            "\nb_inv_ub:", b_inv_ub,
-            "\nmingap:", mingap, 
-            "\nmaxtime:", maxtime,
-            "\ncoef_sym:", coef_sym)
-    
-    return model, result, solveinfo
+    return model, model_pre, result, solveinfo
 
 
 def get_custom_obj(model, Z=1):

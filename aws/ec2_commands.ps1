@@ -1,5 +1,5 @@
 cd "C:\Users\adame\OneDrive\Bureau\CODE\BlendingRL\aws"
-Set-Variable remoteIP "ubuntu@ec2-98-82-134-131.compute-1.amazonaws.com"
+Set-Variable remoteIP "ubuntu@ec2-44-210-238-172.compute-1.amazonaws.com"
 
 ssh -i ".\bp2.pem" $remoteIP -t "    
     export GRB_LICENSE_FILE=/home/ubuntu/bp/gurobi/gurobi.lic;
@@ -29,7 +29,7 @@ scp -i ".\bp2.pem" "../configs/json/action_sample_base.json" "../configs/json/ac
 
 $filesToCopy = @()
 
-for ($k = 40; $k -lt 99; $k++) {
+for ($k = 50; $k -lt 90; $k++) {
     $filePath = "../configs/$k.yaml"
     if (Test-Path $filePath) {
         $filesToCopy += $filePath
@@ -57,6 +57,5 @@ ssh -i "./bp2.pem" ${remoteIP} -t "
 
 # ssh -i ".\bp2.pem" -NL 8008:localhost:8008 $remoteIP
 # tensorboard --logdir ./logs/simple --port 8008
-# python RL_scripts/RL_multitrain.py --configs '[55, 56, 57, 58, 59, 60, 61, 62]' 
-#        --n_tries 2 --n_timesteps 100000 --layout simple;
+# python RL_scripts/RL_multitrain.py --configs '[41, 42, 43,44,45,46,47]' --n_tries 1 --n_timesteps 100000 --layout simple;
 # python ./decision-transformer/gym/experiment.py --env blend --dataset medium --dataset_version v4 --env_type simple --model_type dt --batch_size 128 --max_iters 50 -lr 0.005

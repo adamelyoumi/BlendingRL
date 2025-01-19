@@ -3,6 +3,7 @@ custom_softmax: false
 env:
   B: 100
   D: 0
+  L0_pen: 0
   M: 1000
   P: 100
   Q: 0
@@ -16,6 +17,7 @@ env:
   product_cost: 1
   reg: 0
   reg_lambda: 1
+  shrink_data: false
   uniform_data: true
 id: 47
 model:
